@@ -118,6 +118,26 @@ def ingest_source(
             if subjects:
                 db.set_meta("git_commits", subjects)
 
+        # ---- completeness: prove every declared file was captured -------
+        ingested_paths = {r["path"] for r in db.list_files()}
+        if kind == "repomix":
+            declared = repomix.count_entries(src_path)
+            tree_files = repomix.parse_directory_structure(src_path)
+            tree_total = len(tree_files)
+            excluded = sorted(set(tree_files) - ingested_paths)
+            complete = result.file_count == declared
+        else:
+            declared = result.file_count + len(result.skipped)
+            tree_total = declared
+            excluded = sorted({s.split(":", 1)[0].strip() for s in result.skipped})
+            complete = True  # walker yields every file it sees; skips are intentional
+        if not complete:
+            result.warnings.append(
+                f"completeness check: declared {declared} files but indexed "
+                f"{result.file_count} — {declared - result.file_count} entries were not "
+                "captured (parser issue). Re-run `reflens verify` for details."
+            )
+
         db.set_meta("name", repo_name)
         db.set_meta("source_kind", kind)
         db.set_meta("source_ref", str(src_path))
@@ -128,6 +148,12 @@ def ingest_source(
         db.set_meta("symbol_count", result.symbol_count)
         db.set_meta("chunk_count", result.chunk_count)
         db.set_meta("edge_count", result.edge_count)
+        db.set_meta("declared_file_count", declared)
+        db.set_meta("indexed_file_count", result.file_count)
+        db.set_meta("skipped_count", len(result.skipped))
+        db.set_meta("tree_file_count", tree_total)
+        db.set_meta("excluded_files", excluded[:5000])
+        db.set_meta("complete", complete)
         db.set_meta(
             "config",
             {
@@ -150,8 +176,9 @@ def _iter_files(kind, src_path, max_file_bytes, include_binary, result):
     """Yield (rel_path, raw_bytes, text) for each includable file."""
     if kind == "repomix":
         for rel_path, content in repomix.iter_repomix(src_path):
-            data = content.encode("utf-8")
-            yield rel_path, data, content
+            cleaned = repomix.clean_content(content)
+            data = cleaned.encode("utf-8")
+            yield rel_path, data, cleaned
     else:  # dir / git
         for item in iter_dir(src_path, max_file_bytes=max_file_bytes, include_binary=include_binary):
             if item.skipped:

@@ -51,6 +51,9 @@ def _brief(d: Digest, level: int, budget: int) -> str:
         f"symbols: {m.get('symbol_count', '?')}",
         f"chunks: {m.get('chunk_count', '?')}",
     ]
+    declared = m.get("declared_file_count")
+    if declared is not None and declared != m.get("file_count"):
+        meta_bits.append(f"declared: {declared}")
     if commit:
         meta_bits.append(f"commit: {commit[:12]}")
     if m.get("ingested_at"):
@@ -75,6 +78,15 @@ def _brief(d: Digest, level: int, budget: int) -> str:
             lines.append(
                 f"| {r['lang']} | {r['files']} | {r['lines'] or 0} | {_human_bytes(r['bytes'] or 0)} |"
             )
+
+    # Files present but not indexed (binaries / excluded from a dump).
+    excluded = m.get("excluded_files") or []
+    if excluded:
+        lines.append(f"\n## Present but not indexed ({len(excluded)})")
+        lines.append("In the repo but no content available (binary/excluded):")
+        lines.append(", ".join(f"`{p}`" for p in excluded[:40]))
+        if len(excluded) > 40:
+            lines.append(f"…and {len(excluded) - 40} more.")
 
     # Entry points
     if d.entry_points:

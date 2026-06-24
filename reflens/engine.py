@@ -8,6 +8,7 @@ can never drift in behavior.
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 from typing import Any, Optional
 
 from . import paths
@@ -171,10 +172,11 @@ class Repo:
     def neighbors(self, target: str, *, limit: int = 50) -> dict[str, Any]:
         return _neighbors(self.db, target, limit=limit)
 
-    # ---- verify (proves losslessness) -----------------------------------
+    # ---- verify (proves losslessness AND completeness) ------------------
     def verify(self) -> dict[str, Any]:
         from .store.blobs import sha256_hex
 
+        # 1) Storage integrity: every stored blob decompresses to its hash.
         total = 0
         verified = 0
         failed: list[str] = []
@@ -188,12 +190,45 @@ class Repo:
                     failed.append(row["path"])
             except Exception as exc:  # noqa: BLE001
                 failed.append(f"{row['path']}: {exc}")
+
+        # 2) Completeness: every file the source declared was captured.
+        m = self.db.all_meta()
+        declared = m.get("declared_file_count")
+        indexed = m.get("indexed_file_count", total)
+        skipped = m.get("skipped_count", 0)
+        complete_at_ingest = bool(m.get("complete", True))
+        excluded_known = len(m.get("excluded_files", []) or [])
+        src = m.get("source_ref")
+        kind = m.get("source_kind")
+
+        recheck_declared: Optional[int] = None
+        drift = False
+        source_available = bool(src) and Path(src).exists()
+        if source_available and kind == "repomix":
+            from .ingest import repomix
+
+            recheck_declared = repomix.count_entries(Path(src))
+            drift = recheck_declared != indexed
+
+        completeness = {
+            "declared_files": declared,
+            "indexed_files": indexed,
+            "skipped_files": skipped,
+            "excluded_known": excluded_known,
+            "complete_at_ingest": complete_at_ingest,
+            "source_available": source_available,
+            "recheck_declared": recheck_declared,
+            "drift_detected": drift,
+        }
+
+        ok = bool(not failed and total > 0 and complete_at_ingest and not drift)
         return {
             "repo": self.name,
             "files": total,
             "verified": verified,
             "failed": failed,
-            "ok": not failed and total > 0,
+            "completeness": completeness,
+            "ok": ok,
         }
 
     def meta(self) -> dict[str, Any]:

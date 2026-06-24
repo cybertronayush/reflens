@@ -63,14 +63,14 @@ def extract_python(path: str, text: str, lang: str = "python") -> ExtractOutput:
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        # Unparseable (py2, partial, template). Fall back to import-only scan so the
-        # graph still gets edges; symbols stay empty rather than wrong.
-        out.extractor = "python-ast(syntaxerror)"
-        for line in text.splitlines():
-            s = line.strip()
-            if s.startswith("import ") or s.startswith("from "):
-                out.imports.extend(_imports_from_source_line(s))
-        return out
+        # Unparseable: py2, partial files, or a repomix --compress dump where bodies
+        # are stripped and replaced by markers (not valid Python). Fall back to the
+        # regex outliner so class/def symbols are still recovered, not lost.
+        from .regex_fallback import extract_regex
+
+        fallback = extract_regex(path, text, "python")
+        fallback.extractor = "python-ast(syntaxerror)->regex"
+        return fallback
 
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -146,14 +146,4 @@ def _imports_from_node(node: ast.Import | ast.ImportFrom) -> list[str]:
     return mods
 
 
-def _imports_from_source_line(line: str) -> list[str]:
-    line = line.strip()
-    if line.startswith("from "):
-        try:
-            return [line.split()[1]]
-        except IndexError:
-            return []
-    if line.startswith("import "):
-        rest = line[len("import "):]
-        return [p.strip().split(" as ")[0].split(".")[0] for p in rest.split(",") if p.strip()]
-    return []
+

@@ -20,6 +20,13 @@ _C_LIKE = [
 ]
 
 _PATTERNS: dict[str, list[tuple[str, re.Pattern]]] = {
+    # Used only as a fallback when ast.parse fails (e.g. repomix --compress dumps
+    # where bodies are stripped, so the source isn't valid Python).
+    "python": [
+        ("class", re.compile(r"^\s*class\s+(?P<name>[A-Za-z_]\w*)")),
+        ("function", re.compile(r"^\s*(?:async\s+)?def\s+(?P<name>[A-Za-z_]\w*)")),
+        ("const", re.compile(r"^(?P<name>[A-Z][A-Z0-9_]{1,})\s*[:=]")),
+    ],
     "javascript": [
         ("class", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?class\s+(?P<name>[A-Za-z_$]\w*)")),
         ("function", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s+(?P<name>[A-Za-z_$]\w*)")),
@@ -104,6 +111,10 @@ _PATTERNS["tsx"] = _PATTERNS["typescript"]
 _PATTERNS["jsx"] = _PATTERNS["javascript"]
 
 _IMPORTS: dict[str, list[re.Pattern]] = {
+    "python": [
+        re.compile(r"^\s*import\s+(?P<m>[\w.]+)"),
+        re.compile(r"^\s*from\s+(?P<m>[.\w]+)\s+import"),
+    ],
     "javascript": [
         re.compile(r"""import\s+.*?from\s+['"](?P<m>[^'"]+)['"]"""),
         re.compile(r"""require\(\s*['"](?P<m>[^'"]+)['"]\s*\)"""),
