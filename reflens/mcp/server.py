@@ -41,23 +41,24 @@ def tool_specs() -> list[dict[str, Any]]:
         {
             "name": "reflens_map",
             "description": (
-                "Get the Tier-1 Intelligence Digest of a reference repo: architecture, "
-                "language mix, directory tree, entry points, mined intent (README/commits), "
-                "and the public symbol surface (signatures + docstrings + line anchors). "
-                "This is the cheap, always-start-here overview of the WHOLE repo. Use "
-                "path_glob (e.g. 'src/**') + level=2 to zoom into a subtree at full detail. "
-                "Lossy on bodies; use reflens_read for exact source."
+                "Get the Tier-1 Intelligence Digest of a reference repo. DEFAULT (level 0) is "
+                "a small architecture brief: modules + responsibilities, internal centrality "
+                "(most-depended-on files), entry points, mined decisions/conventions, language "
+                "mix. ALWAYS START HERE — it's a few thousand tokens. To see code signatures, "
+                "scope to a module: reflens_map(repo, path_glob='<module>/**', level=2). A full "
+                "repo at level 1/2 can be 100K+ tokens, so always pair levels 1/2 with a "
+                "path_glob. Lossy on bodies; use reflens_read for exact source."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "repo": {"type": "string", "description": "Reference repo name (see reflens_list)."},
-                    "level": {"type": "integer", "enum": [0, 1, 2], "default": 1,
-                              "description": "0=brief, 1=outlines(top-level), 2=outlines(+methods)."},
+                    "level": {"type": "integer", "enum": [0, 1, 2], "default": 0,
+                              "description": "0=architecture brief (default), 1=+outlines(top-level), 2=+methods. Pair 1/2 with path_glob."},
                     "path_glob": {"type": "string",
-                                  "description": "Optional fnmatch filter to scope to a subtree, e.g. 'crates/**'."},
-                    "budget_tokens": {"type": "integer", "default": 120000,
-                                      "description": "Max tokens for the digest; it truncates with a drill-down pointer."},
+                                  "description": "fnmatch filter to scope to a subtree, e.g. 'crates/**'. Required in practice for level 1/2 on big repos."},
+                    "budget_tokens": {"type": "integer", "default": 25000,
+                                      "description": "Max tokens for the digest; truncates with a drill-down pointer if exceeded."},
                 },
                 "required": ["repo"],
                 "additionalProperties": False,
@@ -269,8 +270,8 @@ def handle_call(name: str, args: dict[str, Any]) -> tuple[str, bool]:
         if name == "reflens_map":
             with Repo.open(repo_name) as r:
                 text, stats = r.map(
-                    level=int(args.get("level", 1)),
-                    budget_tokens=int(args.get("budget_tokens", 120000)),
+                    level=int(args.get("level", 0)),
+                    budget_tokens=int(args.get("budget_tokens", 25000)),
                     path_glob=args.get("path_glob"),
                 )
             footer = (
