@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reflens"
+dynamic = ["version"]
+description = "Reference-repo context engine for AI coding agents. Lossless two-tier (intelligence digest + byte-perfect store) over MCP."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ayush Singh" }]
+keywords = ["llm", "mcp", "context", "rag", "code-search", "ai-agents", "opencode", "claude-code"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+
+# Core has ZERO runtime dependencies. Everything works on the stdlib alone:
+#   - sqlite3 (with FTS5) for storage + lexical search
+#   - ast for exact Python outline extraction
+#   - a stdlib JSON-RPC stdio loop for the MCP server
+dependencies = []
+
+[project.optional-dependencies]
+# Semantic (vector) retrieval on top of lexical FTS5. ONNX-based, no torch.
+semantic = ["fastembed>=0.3.0", "numpy>=1.24"]
+# Multi-language AST outlines (Python is exact via stdlib regardless).
+code = ["tree-sitter-language-pack>=0.2.0", "tree-sitter>=0.21"]
+# More accurate token budgeting for the digest (heuristic is used otherwise).
+tokens = ["tiktoken>=0.7"]
+# Everything.
+all = [
+    "fastembed>=0.3.0",
+    "numpy>=1.24",
+    "tree-sitter-language-pack>=0.2.0",
+    "tree-sitter>=0.21",
+    "tiktoken>=0.7",
+]
+dev = ["pytest>=7", "ruff>=0.5"]
+
+[project.scripts]
+reflens = "reflens.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/ayushsingh/reflens"
+
+[tool.hatch.version]
+path = "reflens/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reflens"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
