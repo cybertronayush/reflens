@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from ..graph import resolve as _resolve
 from ..store import BlobStore, Database
 
 _README_RE = re.compile(r"(^|/)readme(\.[a-z]+)?$", re.IGNORECASE)
@@ -48,6 +50,12 @@ class Digest:
     files: list[DigestFile]
     total_files: int
     shown_files: int
+    modules: list[dict[str, Any]] = field(default_factory=list)
+    key_files: list[dict[str, Any]] = field(default_factory=list)
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    conventions: list[str] = field(default_factory=list)
+    enrichment: dict[str, str] = field(default_factory=dict)
+    enrichment_model: Optional[str] = None
 
 
 def _strip_markdown_noise(text: str) -> str:
@@ -152,6 +160,38 @@ def build_digest(
 
     commit_subjects = meta.get("git_commits", []) or []
 
+    # ---- architecture: modules + internal centrality --------------------
+    dependents = _resolve.internal_dependents(db)
+    mod_rows: dict[str, list] = defaultdict(list)
+    for r in selected:
+        top = r["path"].split("/")[0] if "/" in r["path"] else "(root)"
+        mod_rows[top].append(r)
+    modules: list[dict[str, Any]] = []
+    for top, rows in mod_rows.items():
+        langs = Counter(rr["lang"] for rr in rows)
+        mod_dep = sum(dependents.get(rr["path"], 0) for rr in rows)
+        modules.append({
+            "name": top,
+            "files": len(rows),
+            "langs": [lng for lng, _ in langs.most_common(3)],
+            "dependents": mod_dep,
+            "purpose": _module_purpose(top, db, blobs, all_files),
+        })
+    modules.sort(key=lambda mm: (-mm["files"], mm["name"]))
+
+    key_files = sorted(
+        (
+            {"path": p, "dependents": c}
+            for p, c in dependents.items()
+            if path_glob is None or fnmatch.fnmatch(p, path_glob)
+        ),
+        key=lambda x: -x["dependents"],
+    )[:15]
+
+    # Repo-level signals (skip when scoped to a subtree to keep those fast).
+    decisions = _decisions(db, blobs, all_files) if path_glob is None else []
+    conventions = _conventions(db) if path_glob is None else []
+
     files: list[DigestFile] = []
     if include_symbols:
         for r in selected:
@@ -178,4 +218,105 @@ def build_digest(
         files=files,
         total_files=len(selected),
         shown_files=len(selected),
+        modules=modules,
+        key_files=key_files,
+        decisions=decisions,
+        conventions=conventions,
+        enrichment=(meta.get("enrichment", {}) or {}) if path_glob is None else {},
+        enrichment_model=meta.get("enrichment_model"),
     )
+
+
+_DECISION_RE = re.compile(r"(adr|/spec/|proposal|decision|/rfc|realignment|architecture|vision)", re.I)
+
+
+def _decisions(db: Database, blobs: BlobStore, all_files: list) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in all_files:
+        p = r["path"]
+        if not p.lower().endswith((".md", ".mdx", ".rst")):
+            continue
+        if not _DECISION_RE.search(p):
+            continue
+        title = None
+        frow = db.get_file_by_path(p)
+        if frow is not None:
+            for s in db.symbols_for_file(int(frow["id"])):
+                if s["kind"] == "h1":
+                    title = s["name"]
+                    break
+        summary = None
+        try:
+            text = _strip_markdown_noise(blobs.get_text(r["sha256"]))
+            for para in text.split("\n\n"):
+                pp = para.strip().lstrip("#").strip()
+                if pp and not pp.startswith("!"):
+                    summary = pp[:200]
+                    break
+        except Exception:
+            summary = None
+        out.append({"path": p, "title": title, "summary": summary})
+        if len(out) >= 20:
+            break
+    return out
+
+
+def _conventions(db: Database) -> list[str]:
+    out: list[str] = []
+    imp = Counter(row["dst"] for row in db.conn.execute("SELECT dst FROM edges"))
+
+    tf = [f"{lbl} ({imp[name]})" for name, lbl in
+          (("pytest", "pytest"), ("unittest", "unittest"), ("vitest", "vitest"), ("jest", "jest"))
+          if imp.get(name, 0) > 3]
+    if tf:
+        out.append("Testing: " + ", ".join(tf))
+
+    def _count(sql: str) -> int:
+        return int(db.conn.execute(sql).fetchone()["c"])
+
+    exc = _count("SELECT COUNT(*) c FROM symbols WHERE kind='class' "
+                 "AND (name LIKE '%Error' OR name LIKE '%Exception')")
+    if exc:
+        out.append(f"{exc} custom exception classes (typed errors)")
+
+    total_fn = _count("SELECT COUNT(*) c FROM symbols WHERE kind IN ('function','method')")
+    typed = _count("SELECT COUNT(*) c FROM symbols WHERE kind IN ('function','method') "
+                   "AND signature LIKE '%-> %'")
+    if total_fn:
+        out.append(f"Return type hints on {100 * typed // total_fn}% of functions/methods")
+
+    asy = _count("SELECT COUNT(*) c FROM symbols WHERE signature LIKE 'async def%' "
+                 "OR signature LIKE '%@% async def%'")
+    if asy > 5:
+        out.append(f"{asy} async functions (async-heavy)")
+
+    for name, lbl in (("dataclasses", "dataclasses"), ("pydantic", "pydantic models"),
+                      ("attrs", "attrs"), ("zod", "zod schemas")):
+        if imp.get(name, 0) > 3:
+            out.append(f"{lbl} ({imp[name]} modules)")
+    return out
+
+
+def _module_purpose(
+    top: str, db: Database, blobs: BlobStore, all_files: list
+) -> Optional[str]:
+    """One-line purpose for a top-level module: prefer its __init__ module
+    docstring, then a README first paragraph, then the package's first file doc."""
+    init_path = f"{top}/__init__.py"
+    frow = db.get_file_by_path(init_path)
+    if frow is not None:
+        for s in db.symbols_for_file(int(frow["id"])):
+            if s["kind"] == "module" and s["docstring"]:
+                return s["docstring"]
+    for r in all_files:
+        p = r["path"]
+        if p.startswith(f"{top}/") and _README_RE.search(p):
+            try:
+                text = _strip_markdown_noise(blobs.get_text(r["sha256"]))
+                for para in text.split("\n\n"):
+                    para = para.strip().lstrip("#").strip()
+                    if para and not para.startswith("!"):
+                        return para[:200]
+            except Exception:
+                return None
+    return None

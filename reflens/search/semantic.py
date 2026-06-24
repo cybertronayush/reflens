@@ -12,6 +12,7 @@ it (embeddings.vec is contiguous float32).
 
 from __future__ import annotations
 
+import functools
 from typing import Optional
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
@@ -48,8 +49,12 @@ class Embedder:
         return self.embed([text])[0]
 
 
+@functools.lru_cache(maxsize=4)
 def get_embedder(model_name: Optional[str] = None) -> Optional[Embedder]:
-    """Return an Embedder, or None if the optional backend isn't installed."""
+    """Return a (cached) Embedder, or None if the optional backend isn't installed.
+
+    Cached so the long-lived MCP server loads the ONNX model once, not per query.
+    """
     try:
         import numpy  # noqa: F401  (required for storage/search)
         import fastembed  # noqa: F401

@@ -39,6 +39,17 @@ def _is_binary(data: bytes) -> bool:
     return b"\x00" in data[:8192]
 
 
+def _is_pruned(rel: str) -> bool:
+    """True if any directory segment of the path is a vendored/generated dir.
+
+    Applied even to git-tracked files, because repos routinely commit
+    ``node_modules`` / ``dist`` / ``vendor`` (e.g. vendored examples). That is
+    third-party or generated code and must not dilute the reference index.
+    """
+    segs = rel.split("/")
+    return any(seg in _PRUNE_DIRS for seg in segs[:-1])
+
+
 def _git_tracked_files(root: Path) -> Optional[list[str]]:
     if not (root / ".git").exists():
         return None
@@ -62,8 +73,10 @@ def iter_dir(
     root = Path(root)
     tracked = _git_tracked_files(root)
     if tracked is not None:
-        rel_paths = sorted(tracked)
-        for rel in rel_paths:
+        for rel in sorted(tracked):
+            if _is_pruned(rel):
+                yield WalkItem(rel, None, "vendored/generated dir")
+                continue
             abs_p = root / rel
             yield _read_item(abs_p, rel, max_file_bytes, include_binary)
         return

@@ -30,15 +30,20 @@ _PATTERNS: dict[str, list[tuple[str, re.Pattern]]] = {
     "javascript": [
         ("class", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?class\s+(?P<name>[A-Za-z_$]\w*)")),
         ("function", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s+(?P<name>[A-Za-z_$]\w*)")),
-        ("function", re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>")),
-        ("const", re.compile(r"^\s*export\s+(?:const|let|var)\s+(?P<name>[A-Z][A-Z0-9_]+)\b")),
+        # arrow-function binding (classified as function); must precede generic const
+        ("function", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)\s*=.*=>")),
+        # any exported binding (config objects, instances, constants)
+        ("const", re.compile(r"^\s*export\s+(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)")),
     ],
     "typescript": [
-        *_C_LIKE,
-        ("type", re.compile(r"^\s*(?:export\s+)?type\s+(?P<name>[A-Za-z_$]\w*)")),
-        ("function", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s+(?P<name>[A-Za-z_$]\w*)")),
-        ("function", re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)\s*[:=].*=>")),
-        ("const", re.compile(r"^\s*export\s+const\s+(?P<name>[A-Z][A-Z0-9_]+)\b")),
+        ("class", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?class\s+(?P<name>[A-Za-z_$]\w*)")),
+        ("interface", re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?interface\s+(?P<name>[A-Za-z_$]\w*)")),
+        ("enum", re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+(?P<name>[A-Za-z_$]\w*)")),
+        ("type", re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?type\s+(?P<name>[A-Za-z_$]\w*)")),
+        ("namespace", re.compile(r"^\s*(?:export\s+)?(?:declare\s+)?(?:namespace|module)\s+(?P<name>[A-Za-z_$][\w.]*)")),
+        ("function", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?function\*?\s+(?P<name>[A-Za-z_$]\w*)")),
+        ("function", re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)\s*[:=].*=>")),
+        ("const", re.compile(r"^\s*export\s+(?:declare\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$]\w*)")),
     ],
     "go": [
         ("function", re.compile(r"^\s*func\s+(?:\([^)]*\)\s*)?(?P<name>[A-Za-z_]\w*)\s*\(")),

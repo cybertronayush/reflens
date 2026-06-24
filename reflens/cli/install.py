@@ -15,12 +15,76 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 DEFAULT_SERVER_NAME = "reflens"
+
+_SNIPPET_START = "<!-- reflens:start -->"
+_SNIPPET_END = "<!-- reflens:end -->"
+_SNIPPET_BODY = """## reflens — reference repository context (MCP)
+
+When a task references another codebase ("learn from X repo", "apply the pattern
+from Y", "how does Z do this"), use the `reflens_*` MCP tools instead of guessing.
+reflens holds large reference repos losslessly and serves them on demand.
+
+Workflow:
+1. `reflens_list` — which reference repos are indexed.
+2. `reflens_modules(repo)` then `reflens_map(repo)` — architecture overview (start here).
+3. `reflens_map(repo, path_glob="<module>/**", level=2)` — drill into a module.
+4. `reflens_search(repo, "<query>")` — find relevant code.
+5. `reflens_read(repo, "<path|symbol>", start?, end?)` — byte-exact source.
+6. `reflens_neighbors` / `reflens_history` — dependencies / git history.
+
+Reason from the digest; drop to `reflens_read` for exact implementation. Never
+claim knowledge of a reference repo you have not queried with these tools."""
+
+
+def _agents_targets() -> list[Path]:
+    return [
+        Path.home() / ".config" / "opencode" / "AGENTS.md",
+        Path.home() / ".claude" / "CLAUDE.md",
+    ]
+
+
+def write_agent_guidance() -> list[str]:
+    """Insert/refresh the reflens usage block in global agent instruction files."""
+    block = f"{_SNIPPET_START}\n{_SNIPPET_BODY}\n{_SNIPPET_END}"
+    msgs: list[str] = []
+    for p in _agents_targets():
+        existing = p.read_text() if p.exists() else ""
+        if _SNIPPET_START in existing and _SNIPPET_END in existing:
+            new = re.sub(
+                re.escape(_SNIPPET_START) + r".*?" + re.escape(_SNIPPET_END),
+                block, existing, flags=re.S,
+            )
+            action = "refreshed"
+        else:
+            new = (existing.rstrip() + "\n\n" + block + "\n") if existing.strip() else block + "\n"
+            action = "added"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        bak = p.with_suffix(p.suffix + ".bak")
+        if p.exists() and not bak.exists():
+            shutil.copy2(p, bak)
+        p.write_text(new)
+        msgs.append(f"agent guidance: {action} reflens block in {p}")
+    return msgs
+
+
+def remove_agent_guidance() -> list[str]:
+    block_re = re.compile(re.escape(_SNIPPET_START) + r".*?" + re.escape(_SNIPPET_END) + r"\n?", re.S)
+    msgs: list[str] = []
+    for p in _agents_targets():
+        if not p.exists():
+            continue
+        existing = p.read_text()
+        if _SNIPPET_START in existing:
+            p.write_text(block_re.sub("", existing).rstrip() + "\n")
+            msgs.append(f"agent guidance: removed reflens block from {p}")
+    return msgs
 
 
 def server_command() -> list[str]:

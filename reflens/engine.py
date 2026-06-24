@@ -116,6 +116,30 @@ class Repo:
         digest = build_digest(self.db, self.blobs, path_glob=path_glob, include_symbols=level >= 1)
         return render_digest(digest, level=level, budget_tokens=budget_tokens)
 
+    # ---- modules (lightweight nav menu / table of contents) -------------
+    def modules(self) -> list[dict[str, Any]]:
+        from collections import Counter, defaultdict
+
+        from .graph import resolve
+
+        dep = resolve.internal_dependents(self.db)
+        rows = self.db.list_files()
+        grouped: dict[str, list] = defaultdict(list)
+        for r in rows:
+            top = r["path"].split("/")[0] if "/" in r["path"] else "(root)"
+            grouped[top].append(r)
+        out: list[dict[str, Any]] = []
+        for top, rs in grouped.items():
+            langs = Counter(x["lang"] for x in rs)
+            out.append({
+                "name": top,
+                "files": len(rs),
+                "langs": [lng for lng, _ in langs.most_common(3)],
+                "dependents": sum(dep.get(x["path"], 0) for x in rs),
+            })
+        out.sort(key=lambda m: (-m["files"], m["name"]))
+        return out
+
     # ---- search ----------------------------------------------------------
     def search(self, query: str, *, k: int = 10, mode: str = "auto") -> list[Hit]:
         return _search(self.db, query, k=k, mode=mode)
@@ -172,6 +196,26 @@ class Repo:
     def neighbors(self, target: str, *, limit: int = 50) -> dict[str, Any]:
         return _neighbors(self.db, target, limit=limit)
 
+    # ---- history (on-demand historical context from live git) -----------
+    def history(self, target: Optional[str] = None, *, limit: int = 25) -> dict[str, Any]:
+        m = self.db.all_meta()
+        src = m.get("source_ref")
+        kind = m.get("source_kind")
+        if kind != "dir" or not src or not Path(src).exists():
+            return {
+                "available": False,
+                "reason": f"git history needs a live git source directory; this repo was "
+                f"ingested from {kind!r}. Re-ingest from the repo directory to enable history.",
+            }
+        from .ingest import gitmeta
+
+        src_path = Path(src)
+        if target:
+            commits = gitmeta.file_history(src_path, target, limit)
+        else:
+            commits = gitmeta.commits_with_dates(src_path, limit)
+        return {"available": True, "target": target or "(repo)", "commits": commits}
+
     # ---- verify (proves losslessness AND completeness) ------------------
     def verify(self) -> dict[str, Any]:
         from .store.blobs import sha256_hex
@@ -221,6 +265,29 @@ class Repo:
             "drift_detected": drift,
         }
 
+        # 3) Extraction coverage: % of code files that yielded ≥1 symbol.
+        from .extract.registry import _CODE_LANGS
+
+        langs = tuple(_CODE_LANGS)
+        ph = ",".join("?" * len(langs))
+        code_files = int(
+            self.db.conn.execute(
+                f"SELECT COUNT(*) c FROM files WHERE lang IN ({ph})", langs
+            ).fetchone()["c"]
+        )
+        with_syms = int(
+            self.db.conn.execute(
+                f"SELECT COUNT(DISTINCT s.file_id) c FROM symbols s "
+                f"JOIN files f ON f.id=s.file_id WHERE f.lang IN ({ph})",
+                langs,
+            ).fetchone()["c"]
+        )
+        extraction = {
+            "code_files": code_files,
+            "with_symbols": with_syms,
+            "coverage_pct": round(100 * with_syms / code_files, 1) if code_files else 100.0,
+        }
+
         ok = bool(not failed and total > 0 and complete_at_ingest and not drift)
         return {
             "repo": self.name,
@@ -228,6 +295,7 @@ class Repo:
             "verified": verified,
             "failed": failed,
             "completeness": completeness,
+            "extraction": extraction,
             "ok": ok,
         }
 

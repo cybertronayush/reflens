@@ -21,8 +21,8 @@ def test_tools_list():
     resp = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = {t["name"] for t in resp["result"]["tools"]}
     assert names == {
-        "reflens_list", "reflens_map", "reflens_search",
-        "reflens_read", "reflens_neighbors", "reflens_verify",
+        "reflens_list", "reflens_map", "reflens_modules", "reflens_search",
+        "reflens_read", "reflens_neighbors", "reflens_verify", "reflens_history",
     }
 
 

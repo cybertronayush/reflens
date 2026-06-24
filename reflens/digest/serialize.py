@@ -43,6 +43,12 @@ def _brief(d: Digest, level: int, budget: int) -> str:
         "`reflens_neighbors` to expand dependencies."
     )
     lines.append("")
+    lines.append(
+        "> Navigation (hierarchical, so it always fits a window): this is the architecture "
+        "overview. Drill into any module with `reflens_map(repo, path_glob=\"<module>/**\", "
+        "level=2)`; jump to code with `reflens_search`; pull exact source with `reflens_read`."
+    )
+    lines.append("")
     src = f"{m.get('source_kind','?')}: {m.get('source_ref','?')}"
     commit = m.get("commit_sha")
     meta_bits = [
@@ -78,6 +84,45 @@ def _brief(d: Digest, level: int, budget: int) -> str:
             lines.append(
                 f"| {r['lang']} | {r['files']} | {r['lines'] or 0} | {_human_bytes(r['bytes'] or 0)} |"
             )
+
+    # Architecture: modules + internal centrality (the "where do I start" view).
+    if d.modules:
+        lines.append("\n## Architecture (modules, by size)")
+        lines.append("| module | files | langs | internal deps | purpose |")
+        lines.append("|---|--:|---|--:|---|")
+        for mod in d.modules[:20]:
+            purpose = (mod["purpose"] or "").replace("|", "/")[:90]
+            lines.append(
+                f"| `{mod['name']}` | {mod['files']} | {','.join(mod['langs'])} | "
+                f"{mod['dependents']} | {purpose} |"
+            )
+    if d.key_files:
+        lines.append("\n## Most depended-on internal files (start here)")
+        for kf in d.key_files[:12]:
+            lines.append(f"- `{kf['path']}`  — {kf['dependents']} internal dependents")
+
+    # LLM-generated module intelligence (opt-in via `reflens enrich`).
+    if d.enrichment:
+        lines.append(f"\n## Module intelligence (LLM: {d.enrichment_model or 'unknown'})")
+        for mod_name, summary in d.enrichment.items():
+            lines.append(f"**{mod_name}/** — {summary}")
+
+    # Decisions / ADRs / specs (foregrounded intent).
+    if d.decisions:
+        lines.append("\n## Key decisions & specs")
+        for dec in d.decisions[:20]:
+            head = f"- `{dec['path']}`"
+            if dec.get("title"):
+                head += f" — {dec['title']}"
+            lines.append(head)
+            if dec.get("summary"):
+                lines.append(f"    {dec['summary']}")
+
+    # Conventions (heuristic).
+    if d.conventions:
+        lines.append("\n## Conventions detected")
+        for c in d.conventions:
+            lines.append(f"- {c}")
 
     # Files present but not indexed (binaries / excluded from a dump).
     excluded = m.get("excluded_files") or []
@@ -126,7 +171,13 @@ def _file_block(f: DigestFile, level: int) -> str:
     if not f.symbols:
         return f"#### `{f.path}`  ({f.lang}, {f.line_count} ln) — no extracted symbols"
 
-    out = [f"#### `{f.path}`  ({f.lang}, {f.line_count} ln)"]
+    module_sym = next((s for s in f.symbols if s.kind == "module"), None)
+    header = f"#### `{f.path}`  ({f.lang}, {f.line_count} ln)"
+    if module_sym and module_sym.docstring:
+        header += f" — {module_sym.docstring}"
+    top = [s for s in top if s.kind != "module"]
+
+    out = [header]
     for s in sorted(top, key=lambda x: x.start_line):
         doc = f" — {s.docstring}" if s.docstring else ""
         out.append(f"- `{s.signature}`  ·L{s.start_line}{doc}")

@@ -64,6 +64,21 @@ def tool_specs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "reflens_modules",
+            "description": (
+                "Compact table-of-contents for a reference repo: its top-level modules with "
+                "file counts, languages, and internal-dependency weight. Cheap nav menu — call "
+                "this (or reflens_map) first, then drill into a module with "
+                "reflens_map(path_glob='<module>/**', level=2)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"repo": {"type": "string"}},
+                "required": ["repo"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "reflens_search",
             "description": (
                 "Search a reference repo for relevant code/text. Hybrid lexical (FTS5) + "
@@ -122,6 +137,25 @@ def tool_specs() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "reflens_history",
+            "description": (
+                "Historical context from the reference repo's live git history: recent commits "
+                "for the whole repo, or the change history of a specific file (hash, date, "
+                "author, subject). Use to understand how/why code evolved. Only available when "
+                "the repo was ingested from a live git directory."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "target": {"type": "string", "description": "Optional file path; omit for repo-wide."},
+                    "limit": {"type": "integer", "default": 25},
+                },
+                "required": ["repo"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "reflens_verify",
             "description": (
                 "Prove losslessness: reconstruct every stored file and compare SHA-256 against "
@@ -152,6 +186,16 @@ def _fmt_list() -> str:
             f"{r['chunks']} chunks{sem}  (source: {r['kind']})"
         )
     return "\n".join(lines)
+
+
+def _fmt_modules(repo: str, mods: list) -> str:
+    if not mods:
+        return f"{repo}: no modules."
+    out = [f"{repo} — {len(mods)} modules (drill in with reflens_map path_glob='<module>/**'):"]
+    for m in mods:
+        langs = ",".join(m["langs"])
+        out.append(f"- {m['name']}/  {m['files']} files [{langs}]  · {m['dependents']} internal deps")
+    return "\n".join(out)
 
 
 def _fmt_search(repo: str, query: str, hits: list, mode: str) -> str:
@@ -193,6 +237,15 @@ def _fmt_neighbors(res: dict) -> str:
     return json.dumps(res, indent=2, ensure_ascii=False)
 
 
+def _fmt_history(res: dict) -> str:
+    if not res.get("available"):
+        return res.get("reason", "history unavailable")
+    out = [f"History for {res['target']} ({len(res['commits'])} commits):"]
+    for c in res["commits"]:
+        out.append(f"- {c['date']} {c['hash']} ({c['author']}): {c['subject']}")
+    return "\n".join(out)
+
+
 def _fmt_verify(res: dict) -> str:
     status = "OK — lossless" if res["ok"] else "FAILED"
     out = [f"verify {res['repo']}: {status}",
@@ -227,6 +280,11 @@ def handle_call(name: str, args: dict[str, Any]) -> tuple[str, bool]:
             )
             return text + footer, False
 
+        if name == "reflens_modules":
+            with Repo.open(repo_name) as r:
+                mods = r.modules()
+            return _fmt_modules(repo_name, mods), False
+
         if name == "reflens_search":
             query = args.get("query", "")
             mode = args.get("mode", "auto")
@@ -247,6 +305,11 @@ def handle_call(name: str, args: dict[str, Any]) -> tuple[str, bool]:
             with Repo.open(repo_name) as r:
                 res = r.neighbors(args["target"], limit=int(args.get("limit", 50)))
             return _fmt_neighbors(res), False
+
+        if name == "reflens_history":
+            with Repo.open(repo_name) as r:
+                res = r.history(args.get("target"), limit=int(args.get("limit", 25)))
+            return _fmt_history(res), False
 
         if name == "reflens_verify":
             with Repo.open(repo_name) as r:

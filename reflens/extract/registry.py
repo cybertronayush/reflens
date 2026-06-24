@@ -86,6 +86,10 @@ def extract_outline(path: str, text: str, lang: str | None = None) -> ExtractOut
             return extract_python(path, text, lang)
         except Exception:
             return extract_regex(path, text, "python")
+    if lang == "markdown":
+        from .markdown import extract_markdown
+
+        return extract_markdown(path, text, lang)
     if lang not in _CODE_LANGS:
         return ExtractOutput(extractor="none")
     if os.environ.get("REFLENS_USE_TREESITTER", "").strip() in ("1", "on", "true"):

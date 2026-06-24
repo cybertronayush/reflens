@@ -72,6 +72,14 @@ def extract_python(path: str, text: str, lang: str = "python") -> ExtractOutput:
         fallback.extractor = "python-ast(syntaxerror)->regex"
         return fallback
 
+    mod_doc = clip_doc(ast.get_docstring(tree))
+    if mod_doc:
+        stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "module"
+        out.symbols.append(
+            Symbol(kind="module", name=stem, signature=f"module {path}",
+                   start_line=1, end_line=1, docstring=mod_doc)
+        )
+
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             out.imports.extend(_imports_from_node(node))

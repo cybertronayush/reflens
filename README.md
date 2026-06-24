@@ -69,11 +69,22 @@ Restart OpenCode / Claude Code, then tell it: *"Use `reflens_list`, then `reflen
 | Tool | Purpose |
 |---|---|
 | `reflens_list` | what reference repos are available |
-| `reflens_map(repo, level?, path_glob?, budget_tokens?)` | the Tier-1 digest (whole-repo overview; zoom with `path_glob`) |
-| `reflens_search(repo, query, k?, mode?)` | hybrid lexical+semantic search → ranked `file:line` hits |
+| `reflens_modules(repo)` | compact table-of-contents (modules + internal-dependency weight) — start here |
+| `reflens_map(repo, level?, path_glob?, budget_tokens?)` | the Tier-1 digest: architecture brief (modules, internal centrality, decisions, conventions) + outlines; zoom with `path_glob` |
+| `reflens_search(repo, query, k?, mode?)` | hybrid lexical(FTS5)+semantic search → ranked `file:line` hits |
 | `reflens_read(repo, target, start?, end?)` | **byte-exact** source by file path or symbol name |
 | `reflens_neighbors(repo, target, limit?)` | dependency expansion (imports / imported-by / defines) |
-| `reflens_verify(repo)` | prove losslessness on demand |
+| `reflens_history(repo, target?, limit?)` | git history (repo-wide or per file) from the live source |
+| `reflens_verify(repo)` | prove losslessness + completeness + extraction coverage |
+
+### Navigation model (how "the whole repo" fits a window)
+
+A large repo's full signature surface can exceed a context window (headroom's is ~370K tokens). So the digest is **hierarchical**: `reflens_map(repo, level=0)` is a small always-fits **architecture brief** (modules + most-depended-on files + decisions + conventions); the agent then drills per module with `reflens_map(repo, path_glob="<module>/**", level=2)`. Where any view truncates, it prints the exact tool call to reach the rest — so nothing is unreachable.
+
+### Semantic search & LLM enrichment (opt-in)
+
+- **Semantic search**: `reflens add <src> --semantic` builds vector embeddings (fastembed/ONNX) for concept queries lexical can't match. It's opt-in because CPU embedding is slow (~25 chunks/sec). Lexical FTS5 is the instant default.
+- **LLM enrichment**: `reflens enrich <repo>` (needs `OPENAI_API_KEY` or `--api-key`) writes per-module prose summaries (intent/patterns) into the digest — the one path to "reason as if direct access" pre-loaded rather than retrieved. Off by default; provider-agnostic (any OpenAI-compatible endpoint).
 
 ---
 

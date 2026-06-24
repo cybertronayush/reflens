@@ -93,6 +93,14 @@ def _cmd_map(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_modules(args: argparse.Namespace) -> int:
+    with Repo.open(args.name) as r:
+        mods = r.modules()
+    for m in mods:
+        print(f"{m['name']+'/':30} {m['files']:5} files  [{','.join(m['langs'])}]  · {m['dependents']} deps")
+    return 0
+
+
 def _cmd_search(args: argparse.Namespace) -> int:
     with Repo.open(args.name) as r:
         hits = r.search(args.query, k=args.k, mode=args.mode)
@@ -139,6 +147,17 @@ def _cmd_neighbors(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_history(args: argparse.Namespace) -> int:
+    with Repo.open(args.name) as r:
+        res = r.history(args.target, limit=args.limit)
+    if not res.get("available"):
+        _eprint(res.get("reason", "history unavailable"))
+        return 1
+    for c in res["commits"]:
+        print(f"{c['date']}  {c['hash']}  {c['author']:20.20}  {c['subject']}")
+    return 0
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     with Repo.open(args.name) as r:
         res = r.verify()
@@ -157,6 +176,24 @@ def _cmd_remove(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _cmd_enrich(args: argparse.Namespace) -> int:
+    from .. import enrich as _enrich
+
+    def progress(mod: str) -> None:
+        _eprint(f"  enriched {mod}")
+
+    try:
+        out = _enrich.enrich_repo(
+            args.name, api_key=args.api_key, base_url=args.base_url, model=args.model,
+            max_modules=args.max_modules, progress=progress,
+        )
+    except _enrich.EnrichmentError as exc:
+        _eprint(f"error: {exc}")
+        return 2
+    print(f"enriched {len(out)} modules for '{args.name}'. View: reflens map {args.name}")
+    return 0
+
+
 def _cmd_serve(_args: argparse.Namespace) -> int:
     from ..mcp import serve
 
@@ -164,18 +201,23 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
-    from .install import install
+    from .install import install, write_agent_guidance
 
     for msg in install(args.hosts, name=args.name):
         print(msg)
+    if args.guidance:
+        for msg in write_agent_guidance():
+            print(msg)
     print("\nRestart OpenCode / Claude Code to load the server, then ask it to use `reflens_list`.")
     return 0
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
-    from .install import uninstall
+    from .install import remove_agent_guidance, uninstall
 
     for msg in uninstall(args.hosts, name=args.name):
+        print(msg)
+    for msg in remove_agent_guidance():
         print(msg)
     return 0
 
@@ -189,7 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("add", help="ingest a source into a reference repo")
     a.add_argument("source", help="directory, git repo path, or repomix .md file")
     a.add_argument("--name", help="repo name (default: derived from source)")
-    a.add_argument("--semantic", action="store_true", help="also build vector embeddings (needs reflens[semantic])")
+    a.add_argument("--semantic", dest="semantic", action="store_true", default=False,
+                   help="also build vector embeddings for concept search (slow: CPU "
+                        "embedding is ~25 chunks/sec; lexical FTS5 is the fast default)")
+    a.add_argument("--no-semantic", dest="semantic", action="store_false",
+                   help="lexical-only (the default)")
     a.add_argument("--embed-model", default=None, help="embedding model name (fastembed)")
     a.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES,
                    help=f"skip files larger than this (default {DEFAULT_MAX_FILE_BYTES})")
@@ -205,6 +251,10 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--budget", type=int, default=120000, help="token budget")
     m.add_argument("-o", "--output", default=None, help="write to file instead of stdout")
     m.set_defaults(func=_cmd_map)
+
+    mo = sub.add_parser("modules", help="list modules (table of contents)")
+    mo.add_argument("name")
+    mo.set_defaults(func=_cmd_modules)
 
     s = sub.add_parser("search", help="hybrid search")
     s.add_argument("name")
@@ -228,6 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
     nb.add_argument("--limit", type=int, default=50)
     nb.set_defaults(func=_cmd_neighbors)
 
+    h = sub.add_parser("history", help="git history (repo-wide or for a file)")
+    h.add_argument("name")
+    h.add_argument("target", nargs="?", default=None, help="optional file path")
+    h.add_argument("--limit", type=int, default=25)
+    h.set_defaults(func=_cmd_history)
+
     v = sub.add_parser("verify", help="prove losslessness (SHA-256 round-trip)")
     v.add_argument("name")
     v.set_defaults(func=_cmd_verify)
@@ -237,11 +293,21 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("-y", "--yes", action="store_true")
     rm.set_defaults(func=_cmd_remove)
 
+    en = sub.add_parser("enrich", help="LLM per-module summaries (opt-in; needs API key)")
+    en.add_argument("name")
+    en.add_argument("--model", default=None, help="LLM model (default gpt-4o-mini or $REFLENS_LLM_MODEL)")
+    en.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
+    en.add_argument("--api-key", default=None, help="API key (or $REFLENS_LLM_API_KEY / $OPENAI_API_KEY)")
+    en.add_argument("--max-modules", type=int, default=25)
+    en.set_defaults(func=_cmd_enrich)
+
     sub.add_parser("serve", help="run the MCP stdio server").set_defaults(func=_cmd_serve)
 
     ins = sub.add_parser("install", help="register the MCP server with a host")
     ins.add_argument("hosts", nargs="*", default=["both"], help="opencode claude (default: both)")
     ins.add_argument("--name", default="reflens", help="MCP server name in the host config")
+    ins.add_argument("--no-guidance", dest="guidance", action="store_false", default=True,
+                     help="don't write the reflens usage block into AGENTS.md/CLAUDE.md")
     ins.set_defaults(func=_cmd_install)
 
     un = sub.add_parser("uninstall", help="unregister the MCP server")
