@@ -23,14 +23,20 @@ def _index_keys(path: str) -> list[str]:
             p = p[: -len(ext)]
             break
     parts = [s for s in p.split("/") if s and s not in ("__init__", "mod", "index")]
-    keys: set[str] = set()
-    if parts:
-        keys.add(parts[-1])
-        keys.add(".".join(parts))
-        keys.add("/".join(parts))
-        keys.add(p)
-        for i in range(len(parts)):
-            keys.add(".".join(parts[i:]))
+    if not parts:
+        return []
+    keys: set[str] = {".".join(parts), "/".join(parts), p}
+    # Multi-segment dotted suffixes (a.b.c, b.c) are unambiguous internal refs.
+    for i in range(len(parts)):
+        suffix = parts[i:]
+        if len(suffix) >= 2:
+            keys.add(".".join(suffix))
+    # A BARE single-segment key is registered ONLY for a top-level module: a bare
+    # `import logging` can resolve to a root `logging.py`, never to a deep
+    # `a/b/logging.py`. This stops stdlib/common names (logging, json, types,
+    # config) on deep internal files from hijacking dependency centrality.
+    if len(parts) == 1:
+        keys.add(parts[0])
     return [k for k in keys if k]
 
 
