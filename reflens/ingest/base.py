@@ -1,11 +1,15 @@
 """Ingest orchestrator: source -> blobs (Tier 2) + SQLite index (Tier 1 inputs).
 
 Streams file-by-file and commits in batches so memory stays flat on huge inputs.
-A clean rebuild semantics: ingesting an existing name wipes and recreates it.
+Rebuild is crash- and concurrency-safe: the new index is built in a temporary
+directory and atomically swapped into place at the end, so a live MCP server
+querying the repo never sees a half-built or missing index (re-ingesting while
+serving is safe).
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,13 +66,19 @@ def ingest_source(
     kind, src_path = _classify_source(source)
     repo_name = paths.slugify_name(name) if name else derive_name(source)
 
-    repo_path = paths.repo_dir(repo_name)
-    if repo_path.exists():
-        shutil.rmtree(repo_path)
-    paths.ensure_repo_dirs(repo_name)
+    final_path = paths.repo_dir(repo_name)
+    repos_base = paths.repos_dir()
+    repos_base.mkdir(parents=True, exist_ok=True)
+    # Clean stale temp dirs left by a previously interrupted ingest.
+    for stale in repos_base.glob(f".reflens-tmp-{repo_name}-*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    # Build the new index OUT OF PLACE so the live index keeps serving until the
+    # atomic swap at the very end.
+    work_path = repos_base / f".reflens-tmp-{repo_name}-{os.getpid()}"
+    (work_path / "blobs").mkdir(parents=True, exist_ok=True)
 
-    blobs = BlobStore(paths.blobs_dir(repo_name))
-    db = Database.open(paths.db_path(repo_name), create=True)
+    blobs = BlobStore(work_path / "blobs")
+    db = Database.open(work_path / "index.db", create=True)
 
     result = IngestResult(name=repo_name, file_count=0, total_bytes=0,
                           symbol_count=0, chunk_count=0, edge_count=0)
@@ -164,12 +174,38 @@ def ingest_source(
             },
         )
         db.commit()
-    finally:
         db.close()
+    except BaseException:
+        try:
+            db.close()
+        except Exception:
+            pass
+        shutil.rmtree(work_path, ignore_errors=True)
+        raise
+
+    # Atomic-ish swap: move the freshly built index into place. A reader sees the
+    # old index until the final rename, then the new one — never a half-built dir.
+    _swap_into_place(work_path, final_path, repo_name)
 
     if result.file_count == 0:
         result.warnings.append("no files were ingested (empty source or all skipped)")
     return result
+
+
+def _swap_into_place(work_path: Path, final_path: Path, repo_name: str) -> None:
+    backup = final_path.parent / f".reflens-old-{repo_name}-{os.getpid()}"
+    shutil.rmtree(backup, ignore_errors=True)
+    if final_path.exists():
+        final_path.rename(backup)
+    try:
+        work_path.rename(final_path)
+    except BaseException:
+        # Roll back to the previous index if the final move failed.
+        if backup.exists() and not final_path.exists():
+            backup.rename(final_path)
+        shutil.rmtree(work_path, ignore_errors=True)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
 
 
 def _iter_files(kind, src_path, max_file_bytes, include_binary, result):

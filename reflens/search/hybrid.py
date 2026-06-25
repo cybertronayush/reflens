@@ -8,6 +8,7 @@ when combining heterogeneous rankers.
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import Optional
 
@@ -17,6 +18,47 @@ from ..store import Database
 _RRF_K = 60
 _SNIPPET_LINES = 16
 _SNIPPET_CHARS = 1000
+
+# In-process cache of (signature, ids, matrix) per DB file. Without it, semantic
+# search re-reads and re-stacks every vector from SQLite on every query — the
+# dominant per-query cost on a large repo. The signature (db file mtime+size plus
+# the WAL size) changes when the index is re-ingested, auto-invalidating the cache.
+_VEC_CACHE: dict = {}
+
+
+def _db_signature(db: Database):
+    try:
+        path = None
+        for row in db.conn.execute("PRAGMA database_list"):
+            if row[1] == "main" and row[2]:
+                path = row[2]
+                break
+        if not path:
+            return None, None
+        st = os.stat(path)
+        wal = path + "-wal"
+        wal_sz = os.path.getsize(wal) if os.path.exists(wal) else 0
+        return path, (st.st_mtime_ns, st.st_size, wal_sz)
+    except OSError:
+        return None, None
+
+
+def _load_vectors(db: Database, np):
+    """Return (ids, matrix) of all chunk embeddings, cached per DB file."""
+    path, sig = _db_signature(db)
+    if path is not None:
+        cached = _VEC_CACHE.get(path)
+        if cached is not None and cached[0] == sig:
+            return cached[1], cached[2]
+    ids: list[int] = []
+    mat: list = []
+    for row in db.iter_embeddings():
+        ids.append(int(row["chunk_id"]))
+        mat.append(np.frombuffer(row["vec"], dtype="float32"))
+    matrix = np.vstack(mat) if mat else None
+    if path is not None:
+        _VEC_CACHE[path] = (sig, ids, matrix)
+    return ids, matrix
 
 
 def _snippet(text: str) -> str:
@@ -48,14 +90,9 @@ def _semantic_ranked_chunk_ids(
         return []
     qvec = np.frombuffer(embedder.embed_query(query), dtype="float32")
 
-    ids: list[int] = []
-    mat: list = []
-    for row in db.iter_embeddings():
-        ids.append(int(row["chunk_id"]))
-        mat.append(np.frombuffer(row["vec"], dtype="float32"))
-    if not ids:
+    ids, matrix = _load_vectors(db, np)
+    if not ids or matrix is None:
         return []
-    matrix = np.vstack(mat)
     sims = matrix @ qvec  # vectors are L2-normalized => dot == cosine
     top = np.argsort(-sims)[:limit]
     return [ids[i] for i in top]
