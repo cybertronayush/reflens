@@ -229,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     a = sub.add_parser("add", help="ingest a source into a reference repo")
-    a.add_argument("source", help="directory, git repo path, or repomix .md file")
+    a.add_argument("source", help="directory, git checkout, remote git URL (cloned), or repomix .md file")
     a.add_argument("--name", help="repo name (default: derived from source)")
     a.add_argument("--semantic", dest="semantic", action="store_true", default=False,
                    help="also build vector embeddings for concept search (slow: CPU "

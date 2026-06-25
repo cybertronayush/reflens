@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -28,9 +30,9 @@ _COMMIT_EVERY = 400
 
 
 def derive_name(source: str) -> str:
-    p = Path(source)
+    p = Path(source.rstrip("/"))
     stem = p.name
-    for suffix in (".md", ".txt"):
+    for suffix in (".md", ".txt", ".git"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
     for prefix in ("repomix-output-", "repomix-"):
@@ -53,6 +55,35 @@ def _classify_source(source: str) -> tuple[str, Path]:
     raise FileNotFoundError(f"source not found: {source}")
 
 
+def _looks_like_git_url(source: str) -> bool:
+    s = source.strip()
+    return s.startswith(("http://", "https://", "git://", "ssh://", "git@"))
+
+
+def _clone_to_temp(url: str) -> tuple[Path, Path]:
+    """Shallow-clone a remote git URL to a temp dir. Returns (repo_dir, temp_root).
+
+    Depth 50 keeps it fast while giving enough history for the digest's recent-
+    changes mining; the working tree at HEAD is complete, so Tier-2 losslessness
+    is unaffected.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="reflens-clone-"))
+    dest = tmp / "repo"
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "50", "--single-branch", url, str(dest)],
+            capture_output=True, timeout=600, check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        shutil.rmtree(tmp, ignore_errors=True)
+        detail = exc.stderr.decode("utf-8", "replace")[:300] if exc.stderr else str(exc)
+        raise RuntimeError(f"git clone failed for {url}: {detail}") from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError(f"git clone failed for {url}: {exc}") from exc
+    return dest, tmp
+
+
 def ingest_source(
     name: Optional[str],
     source: str,
@@ -63,8 +94,48 @@ def ingest_source(
     include_binary: bool = False,
     progress: Optional[ProgressFn] = None,
 ) -> IngestResult:
-    kind, src_path = _classify_source(source)
-    repo_name = paths.slugify_name(name) if name else derive_name(source)
+    """Ingest a local directory, a Repomix .md dump, or a remote git URL.
+
+    Remote URLs are shallow-cloned to a temp dir, ingested, then cleaned up; the
+    stored ``source_ref`` is the URL.
+    """
+    clone_tmp: Optional[Path] = None
+    if not Path(source).expanduser().exists() and _looks_like_git_url(source):
+        clone_dest, clone_tmp = _clone_to_temp(source)
+        classify_target = str(clone_dest)
+    else:
+        classify_target = source
+    try:
+        return _run_ingest(
+            name=name,
+            original_source=source,
+            classify_target=classify_target,
+            source_ref_display=source,
+            semantic=semantic,
+            embed_model=embed_model,
+            max_file_bytes=max_file_bytes,
+            include_binary=include_binary,
+            progress=progress,
+        )
+    finally:
+        if clone_tmp is not None:
+            shutil.rmtree(clone_tmp, ignore_errors=True)
+
+
+def _run_ingest(
+    *,
+    name: Optional[str],
+    original_source: str,
+    classify_target: str,
+    source_ref_display: str,
+    semantic: bool,
+    embed_model: Optional[str],
+    max_file_bytes: int,
+    include_binary: bool,
+    progress: Optional[ProgressFn],
+) -> IngestResult:
+    kind, src_path = _classify_source(classify_target)
+    repo_name = paths.slugify_name(name) if name else derive_name(original_source)
 
     final_path = paths.repo_dir(repo_name)
     repos_base = paths.repos_dir()
@@ -150,7 +221,7 @@ def ingest_source(
 
         db.set_meta("name", repo_name)
         db.set_meta("source_kind", kind)
-        db.set_meta("source_ref", str(src_path))
+        db.set_meta("source_ref", source_ref_display)
         db.set_meta("ingested_at", datetime.now(timezone.utc).isoformat())
         db.set_meta("commit_sha", commit_sha)
         db.set_meta("file_count", result.file_count)

@@ -294,17 +294,19 @@ def handle_call(name: str, args: dict[str, Any]) -> tuple[str, bool]:
             return _fmt_search(repo_name, query, hits, mode), False
 
         if name == "reflens_read":
+            target = args.get("target")
+            if not target:
+                return "missing required argument: target (a file path or symbol name)", True
             with Repo.open(repo_name) as r:
-                res = r.read(
-                    args["target"],
-                    start=args.get("start"),
-                    end=args.get("end"),
-                )
+                res = r.read(target, start=args.get("start"), end=args.get("end"))
             return _fmt_read(res), False
 
         if name == "reflens_neighbors":
+            target = args.get("target")
+            if not target:
+                return "missing required argument: target (a file path or symbol name)", True
             with Repo.open(repo_name) as r:
-                res = r.neighbors(args["target"], limit=int(args.get("limit", 50)))
+                res = r.neighbors(target, limit=int(args.get("limit", 50)))
             return _fmt_neighbors(res), False
 
         if name == "reflens_history":

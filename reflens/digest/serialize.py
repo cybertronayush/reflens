@@ -48,6 +48,12 @@ def _brief(d: Digest, level: int, budget: int) -> str:
         "overview. Drill into any module with `reflens_map(repo, path_glob=\"<module>/**\", "
         "level=2)`; jump to code with `reflens_search`; pull exact source with `reflens_read`."
     )
+    if d.path_glob and d.total_files == 0:
+        lines.append(
+            f"\n> **No files match path_glob `{d.path_glob}`.** Call `reflens_modules` to "
+            "see valid top-level module names, then scope e.g. `path_glob=\"<module>/**\"` "
+            "(fnmatch — use `**` to recurse)."
+        )
     lines.append("")
     src = f"{m.get('source_kind','?')}: {m.get('source_ref','?')}"
     commit = m.get("commit_sha")

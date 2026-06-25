@@ -18,6 +18,10 @@ _ENTRY_HINTS = (
     "index.js", "main.ts", "main.go", "main.rs", "manage.py", "wsgi.py", "asgi.py",
 )
 _README_MAX_CHARS = 1800
+# Cap how many files get full symbol outlines materialized. The serializer
+# truncates by token budget far below this; this just bounds memory on very large
+# repos (no point building 100k DigestFile objects to render a few hundred).
+_MAX_OUTLINE_FILES = 6000
 
 
 @dataclass
@@ -56,6 +60,7 @@ class Digest:
     conventions: list[str] = field(default_factory=list)
     enrichment: dict[str, str] = field(default_factory=dict)
     enrichment_model: Optional[str] = None
+    path_glob: Optional[str] = None
 
 
 def _strip_markdown_noise(text: str) -> str:
@@ -194,7 +199,7 @@ def build_digest(
 
     files: list[DigestFile] = []
     if include_symbols:
-        for r in selected:
+        for r in selected[:_MAX_OUTLINE_FILES]:
             syms = [
                 DigestSymbol(
                     kind=s["kind"], name=s["name"], signature=s["signature"],
@@ -224,6 +229,7 @@ def build_digest(
         conventions=conventions,
         enrichment=(meta.get("enrichment", {}) or {}) if path_glob is None else {},
         enrichment_model=meta.get("enrichment_model"),
+        path_glob=path_glob,
     )
 
 

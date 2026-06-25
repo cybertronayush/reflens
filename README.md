@@ -40,8 +40,9 @@ Core has **zero runtime dependencies** — stdlib `sqlite3` (FTS5), `ast`, and a
 ## Use
 
 ```bash
-# 1. Ingest a reference repo (dir, git repo, or repomix .md)
+# 1. Ingest a reference repo (dir, git checkout, remote git URL, or repomix .md)
 reflens add /path/to/flagship-repo --name flagship
+reflens add https://github.com/org/repo --name flagship   # remote URL (shallow-cloned)
 reflens add ./repomix-output-some-repo.md          # a Repomix dump
 reflens add /path/to/repo --name flagship --semantic   # + vector search
 
