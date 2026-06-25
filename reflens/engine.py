@@ -19,6 +19,7 @@ from .search import search as _search
 from .store import BlobStore, Database
 
 DEFAULT_READ_MAX_LINES = 1500
+DEFAULT_SYMBOL_WINDOW = 200
 
 
 def list_repos() -> list[dict[str, Any]]:
@@ -187,10 +188,35 @@ class Repo:
                 if frow is None:
                     continue
                 content = self.blobs.get_text(frow["sha256"])
-                body, bs, be, _, _ = _slice_lines(content, s["start_line"], s["end_line"])
+                end = self._symbol_extent(
+                    int(frow["id"]), s["start_line"], s["end_line"], int(frow["line_count"])
+                )
+                body, bs, be, _, _ = _slice_lines(content, s["start_line"], end)
                 bodies.append({"path": s["path"], "symbol": s["name"],
                                "start_line": bs, "end_line": be, "content": body})
         return {"kind": "symbol", "target": target, "matches": candidates, "bodies": bodies}
+
+    def _symbol_extent(
+        self, file_id: int, start_line: int, declared_end: int, total_lines: int
+    ) -> int:
+        """Best-effort end line for a symbol's body.
+
+        Exact extractors (Python ast) give a real ``end_line > start_line`` — use it.
+        Regex/markdown extractors emit *point* symbols (``end == start``); bound the
+        body by the next symbol's start line in the same file, capped at
+        ``DEFAULT_SYMBOL_WINDOW``, so a read returns the actual implementation
+        instead of a single declaration line.
+        """
+        if declared_end > start_line:
+            return declared_end
+        row = self.db.conn.execute(
+            "SELECT MIN(start_line) AS m FROM symbols WHERE file_id=? AND start_line>?",
+            (file_id, start_line),
+        ).fetchone()
+        nxt = row["m"] if row and row["m"] is not None else None
+        end = (nxt - 1) if nxt else total_lines
+        end = min(end, start_line + DEFAULT_SYMBOL_WINDOW, total_lines)
+        return max(end, start_line)
 
     # ---- neighbors -------------------------------------------------------
     def neighbors(self, target: str, *, limit: int = 50) -> dict[str, Any]:
