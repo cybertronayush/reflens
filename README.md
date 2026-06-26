@@ -157,24 +157,59 @@ reflens is for **"I want my agent to learn from N flagship repos I don't want cl
 - **`reflens_history` needs a live git source dir** — unavailable for URL-cloned or repomix repos (the digest still shows recent commit subjects).
 - **Not yet benchmarked** against the "just clone it" baseline. The design is sound; measured task-success deltas are future work.
 
-## Install (details)
+## Install & setup
 
-reflens has **zero required runtime dependencies** — it runs on the standard library alone (`sqlite3` with FTS5, `ast`, and a hand-rolled MCP stdio server). Requires **Python 3.10+**.
+reflens has **zero required runtime dependencies** — it runs on the standard
+library alone (`sqlite3` with FTS5, `ast`, and a hand-rolled MCP stdio server).
+The **core** works on **Python 3.10+**. The optional extras (`semantic`, `code`)
+pull `fastembed`/`tree-sitter`, whose wheels can lag the newest Python, so for
+those use **Python 3.12** (recommended).
+
+Pick one install path, then do the same three post-install steps.
+
+### Path A — pipx (isolated, simplest)
 
 ```bash
-# Recommended (isolated)
-pipx install "git+https://github.com/cybertronayush/reflens"
-
-# Optional extras
-pipx install "reflens[semantic] @ git+https://github.com/cybertronayush/reflens"   # fastembed vector search
-pipx install "reflens[code]     @ git+https://github.com/cybertronayush/reflens"   # tree-sitter multi-language
-
-# From source
-git clone https://github.com/cybertronayush/reflens && cd reflens
-python3 -m venv .venv && .venv/bin/pip install -e ".[semantic]"
+pipx install "reflens[semantic] @ git+https://github.com/cybertronayush/reflens"
+# core only: pipx install "git+https://github.com/cybertronayush/reflens"
 ```
 
-Local state lives in `~/.reflens` (override with `REFLENS_HOME`). Nothing leaves your machine.
+### Path B — from source (this is exactly how the reference setup runs)
+
+```bash
+git clone https://github.com/cybertronayush/reflens && cd reflens
+python3.12 -m venv .venv
+.venv/bin/pip install -e ".[semantic,code,tokens]"
+
+# make the `reflens` command available globally (PATH must include ~/.local/bin)
+mkdir -p ~/.local/bin
+ln -sf "$PWD/.venv/bin/reflens" ~/.local/bin/reflens
+```
+
+### Then (any path) — wire it in, restart, stock the library
+
+```bash
+reflens install both        # registers the MCP server in OpenCode + Claude Code
+                            # and writes a usage block into their global AGENTS.md / CLAUDE.md
+# → restart OpenCode / Claude Code so they launch the server
+reflens add <dir|git-url|repomix.md> --name myref   # populate the library (repeat per repo)
+reflens list                # confirm
+```
+
+`reflens install` wires each host to launch the server via the interpreter that
+has reflens installed, e.g.:
+
+```json
+// ~/.config/opencode/opencode.json  →  mcp.reflens
+{ "type": "local",
+  "command": ["/abs/path/.venv/bin/python", "-m", "reflens", "serve"],
+  "enabled": true }
+// ~/.claude.json  →  mcpServers.reflens  (command/args form, same interpreter)
+```
+
+Local state lives in `~/.reflens` (override with `REFLENS_HOME`). Nothing leaves
+your machine. To update reflens itself, `git pull` (source) or re-run the pipx
+install, then restart your agent.
 
 ## Contributing
 
