@@ -8,7 +8,6 @@ when combining heterogeneous rankers.
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 from ..models import Hit
@@ -18,46 +17,34 @@ _RRF_K = 60
 _SNIPPET_LINES = 16
 _SNIPPET_CHARS = 1000
 
-# In-process cache of (signature, ids, matrix) per DB file. Without it, semantic
-# search re-reads and re-stacks every vector from SQLite on every query — the
-# dominant per-query cost on a large repo. The signature (db file mtime+size plus
-# the WAL size) changes when the index is re-ingested, auto-invalidating the cache.
+# In-process cache of (signature, units, ids, matrix) per DB file. Without it,
+# semantic search re-reads and re-stacks every vector from SQLite on every query —
+# the dominant per-query cost. The signature changes when the index is re-ingested
+# (atomic swap replaces the file), auto-invalidating the cache.
 _VEC_CACHE: dict = {}
 
 
-def _db_signature(db: Database):
-    try:
-        path = None
-        for row in db.conn.execute("PRAGMA database_list"):
-            if row[1] == "main" and row[2]:
-                path = row[2]
-                break
-        if not path:
-            return None, None
-        st = os.stat(path)
-        wal = path + "-wal"
-        wal_sz = os.path.getsize(wal) if os.path.exists(wal) else 0
-        return path, (st.st_mtime_ns, st.st_size, wal_sz)
-    except OSError:
-        return None, None
-
-
 def _load_vectors(db: Database, np):
-    """Return (ids, matrix) of all chunk embeddings, cached per DB file."""
-    path, sig = _db_signature(db)
+    """Return (units, ids, matrix) of all embeddings, cached per DB file.
+
+    `units[i]` is the unit kind ('symbol' by default) for `ids[i]`.
+    """
+    path, sig = db.file_signature()
     if path is not None:
         cached = _VEC_CACHE.get(path)
         if cached is not None and cached[0] == sig:
-            return cached[1], cached[2]
+            return cached[1], cached[2], cached[3]
+    units: list[str] = []
     ids: list[int] = []
     mat: list = []
     for row in db.iter_embeddings():
-        ids.append(int(row["chunk_id"]))
+        units.append(row["unit"])
+        ids.append(int(row["unit_id"]))
         mat.append(np.frombuffer(row["vec"], dtype="float32"))
     matrix = np.vstack(mat) if mat else None
     if path is not None:
-        _VEC_CACHE[path] = (sig, ids, matrix)
-    return ids, matrix
+        _VEC_CACHE[path] = (sig, units, ids, matrix)
+    return units, ids, matrix
 
 
 def _snippet(text: str) -> str:
@@ -68,14 +55,10 @@ def _snippet(text: str) -> str:
     return head
 
 
-def _rrf_add(scores: dict, ranked_ids: list, weight: float = 1.0) -> None:
-    for rank, key in enumerate(ranked_ids):
-        scores[key] = scores.get(key, 0.0) + weight / (_RRF_K + rank + 1)
-
-
-def _semantic_ranked_chunk_ids(
+def _semantic_symbol_hits(
     db: Database, query: str, limit: int, model: Optional[str]
-) -> list[int]:
+) -> list[Hit]:
+    """Rank symbols by cosine over the symbol-surface embeddings -> Hit list."""
     if not db.has_embeddings():
         return []
     try:
@@ -87,14 +70,25 @@ def _semantic_ranked_chunk_ids(
     embedder = get_embedder(model)
     if embedder is None:
         return []
-    qvec = np.frombuffer(embedder.embed_query(query), dtype="float32")
-
-    ids, matrix = _load_vectors(db, np)
-    if not ids or matrix is None:
+    units, ids, matrix = _load_vectors(db, np)
+    if matrix is None or not ids:
         return []
+    qvec = np.frombuffer(embedder.embed_query(query), dtype="float32")
     sims = matrix @ qvec  # vectors are L2-normalized => dot == cosine
     top = np.argsort(-sims)[:limit]
-    return [ids[i] for i in top]
+    sym_ids = [ids[i] for i in top if units[i] == "symbol"]
+    rows = db.symbols_by_ids(sym_ids)
+    hits: list[Hit] = []
+    for sid in sym_ids:
+        r = rows.get(sid)
+        if r is None:
+            continue
+        hits.append(
+            Hit(path=r["path"], start_line=r["start_line"], end_line=r["end_line"],
+                score=0.0, snippet=f"{r['kind']} {r['name']}: {r['signature']}",
+                kind="symbol", name=r["name"], source="semantic")
+        )
+    return hits
 
 
 def search(
@@ -108,70 +102,49 @@ def search(
     query = (query or "").strip()
     if not query:
         return []
-
     pool = max(k * 3, 20)
-    chunk_scores: dict[int, float] = {}
-    chunk_rows: dict[int, dict] = {}
-
     use_lexical = mode in ("auto", "lexical", "hybrid")
     use_semantic = mode in ("auto", "semantic", "hybrid")
 
+    # Each ranker yields an ordered list of Hits; we fuse heterogeneous result
+    # types (lexical chunks, semantic symbols, symbol-name matches) by a common
+    # (path, line, kind) key with Reciprocal Rank Fusion.
+    ranked_lists: list[list[Hit]] = []
+
     if use_lexical:
-        lex = db.search_chunks_fts(query, limit=pool)
-        ids = [int(r["id"]) for r in lex]
-        for r in lex:
-            chunk_rows[int(r["id"])] = dict(r)
-        _rrf_add(chunk_scores, ids, weight=1.0)
+        ranked_lists.append([
+            Hit(path=r["path"], start_line=r["start_line"], end_line=r["end_line"],
+                score=0.0, snippet=_snippet(r["text"]), kind="chunk", source="lexical")
+            for r in db.search_chunks_fts(query, limit=pool)
+        ])
+        ranked_lists.append([
+            Hit(path=r["path"], start_line=r["start_line"], end_line=r["end_line"],
+                score=0.0, snippet=f"{r['kind']} {r['name']}: {r['signature']}",
+                kind="symbol", name=r["name"], source="lexical")
+            for r in db.search_symbols_fts(query, limit=pool)
+        ])
 
     if use_semantic:
-        sem_ids = _semantic_ranked_chunk_ids(db, query, pool, embed_model)
-        for cid in sem_ids:
-            if cid not in chunk_rows:
-                row = db.get_chunk(cid)
-                if row is None:
-                    continue
-                f = db.conn.execute(
-                    "SELECT path FROM files WHERE id=?", (row["file_id"],)
-                ).fetchone()
-                chunk_rows[cid] = {
-                    "id": cid, "path": f["path"] if f else "?",
-                    "start_line": row["start_line"], "end_line": row["end_line"],
-                    "text": row["text"],
-                }
-        _rrf_add(chunk_scores, sem_ids, weight=1.0)
+        sem = _semantic_symbol_hits(db, query, pool, embed_model)
+        if sem:
+            ranked_lists.append(sem)
 
-    hits: list[Hit] = []
-    for cid, score in chunk_scores.items():
-        r = chunk_rows.get(cid)
-        if not r:
-            continue
-        src = "hybrid" if use_lexical and use_semantic and db.has_embeddings() else (
-            "semantic" if use_semantic and db.has_embeddings() and not use_lexical else "lexical"
-        )
-        hits.append(
-            Hit(path=r["path"], start_line=r["start_line"], end_line=r["end_line"],
-                score=round(score, 6), snippet=_snippet(r["text"]),
-                kind="chunk", source=src)
-        )
+    scores: dict[tuple, float] = {}
+    best: dict[tuple, Hit] = {}
+    sources: dict[tuple, set] = {}
+    for lst in ranked_lists:
+        for rank, h in enumerate(lst):
+            key = (h.path, h.start_line, h.kind)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (_RRF_K + rank + 1)
+            best.setdefault(key, h)
+            sources.setdefault(key, set()).add(h.source)
 
-    # High-signal symbol-name matches, folded in (lexical FTS over symbols).
-    if use_lexical:
-        for r in db.search_symbols_fts(query, limit=k):
-            hits.append(
-                Hit(path=r["path"], start_line=r["start_line"], end_line=r["end_line"],
-                    score=round(1.0 / (_RRF_K + 1), 6) + 0.001,
-                    snippet=f"{r['kind']} {r['name']}: {r['signature']}",
-                    kind="symbol", name=r["name"], source="lexical")
-            )
-
-    hits.sort(key=lambda h: h.score, reverse=True)
-    # Dedup by (path, start_line), keep best.
-    seen: set = set()
-    deduped: list[Hit] = []
-    for h in hits:
-        key = (h.path, h.start_line, h.kind)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(h)
-    return deduped[:k]
+    out: list[Hit] = []
+    for key, sc in scores.items():
+        h = best[key]
+        h.score = round(sc, 6)
+        srcs = sources[key]
+        h.source = "hybrid" if len(srcs) > 1 else next(iter(srcs))
+        out.append(h)
+    out.sort(key=lambda h: h.score, reverse=True)
+    return out[:k]

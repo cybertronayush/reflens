@@ -145,7 +145,7 @@ of the repo's **own** modules are most depended on (not that everyone imports
 ## 8. Search: lexical + semantic, fused
 
 - **Lexical (always):** SQLite FTS5 + `bm25`. Queries are sanitized by quoting every token (neutralizes FTS5 operators → no syntax errors, no injection).
-- **Semantic (opt-in):** `fastembed` (ONNX, no torch) embeds chunks; vectors are L2-normalized float32, so cosine = dot product. The full matrix is **cached in-process per DB file** (signature = mtime+size+WAL), invalidated automatically on re-ingest — a repeat semantic query drops from ~575 ms to ~3 ms.
+- **Semantic (opt-in):** `fastembed` (ONNX, no torch) embeds the **symbol surface** — `kind + name + signature + docstring` — not raw code bodies. This is both ~6x faster to build (191 vs 28 units/s → a 24k-symbol repo in ~4 min vs ~12 min) and a better concept-match target (a query like "detect content type and pick a compressor" ranks `dispatch_compressor` #1, where body-chunks returned docs/tests). Vectors are L2-normalized float32 (cosine = dot product); the full matrix is **cached in-process per DB file** (signature = mtime+size+WAL), invalidated on re-ingest — a repeat semantic query is ~3 ms. Symbol-less files (e.g. raw data) get no semantic coverage but remain in lexical FTS; byte-exact retrieval is unaffected.
 - **Fusion:** Reciprocal Rank Fusion (`1/(K+rank)` summed across rankers). RRF is scale-free, so bm25 distances and cosine similarities combine without normalization. Symbol-name FTS hits are folded in as high-signal.
 
 Brute-force cosine is correct and fast to ~hundreds of thousands of chunks; an ANN
@@ -195,7 +195,9 @@ a usage block into the global `AGENTS.md` / `CLAUDE.md`.
 
 - **Two tiers, retrieval as safety net** — rejected "stuff it all in the window" because it's physically impossible at scale and fails silently. The honest model is navigable completeness + provable lossless store.
 - **Zero core dependencies** — chose stdlib `sqlite3`/FTS5 + `ast` + hand-rolled MCP over the `mcp` SDK + a vector DB, because it installs anywhere, runs offline, and code search is largely lexical. Heavy capabilities (semantic, tree-sitter, accurate tokens) are opt-in extras.
-- **Lexical default, semantic opt-in** — CPU embedding is ~25 chunks/s; making it the default would mean a 12-minute ingest. Lexical FTS5 is instant and strong for code; semantic is a worthwhile upgrade you choose.
+- **Lexical default, semantic opt-in** — even at symbol granularity, embedding a large repo is a multi-minute one-time cost; lexical FTS5 is instant and strong for code. Semantic is a worthwhile upgrade you choose.
+- **Embed symbols, not chunks** (measured) — embedding raw code bodies was ~28 units/s *and* less accurate (body tokens are noise). Embedding the signature+docstring surface is ~6x faster (191/s) and ranks the actual implementing symbol first. Rejected body-embedding because it lost on both speed and accuracy; the narrow gap (concept match to body content absent from the signature) is covered by lexical FTS over full content.
+- **Signature-keyed caches for hot reads** — `internal_dependents`, the digest's repo-level signals (decisions/conventions), and the semantic vector matrix are each cached per DB-file signature (mtime+size+WAL), so `map`/`modules`/repeat-search are ~1–9 ms instead of re-scanning every call; re-ingest swaps the file → signature changes → caches drop. Server pre-warms the embedder in a background thread so the first semantic query doesn't pay the model load.
 - **`Repo` facade as the one seam** — so CLI and MCP can't diverge.
 - **Atomic swap over in-place rebuild** — re-ingesting while serving must not corrupt or blank the index.
 - **Brute-force vectors, ANN deferred** — correct and fast at target scale; not worth the index/persistence complexity until repos exceed ~200 MB.

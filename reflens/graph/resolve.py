@@ -82,8 +82,28 @@ def resolve_import(token: str, src_path: str, index: dict[str, str], pathset: se
     return None
 
 
+_DEP_CACHE: dict = {}
+
+
 def internal_dependents(db: Database) -> dict[str, int]:
-    """file path -> number of distinct internal files that import it."""
+    """file path -> number of distinct internal files that import it.
+
+    Cached per DB-file signature: this scans + resolves every import edge, which
+    `reflens_map` and `reflens_modules` both call on every request. The cache
+    invalidates automatically on re-ingest (the DB file is replaced).
+    """
+    path, sig = db.file_signature()
+    if path is not None:
+        cached = _DEP_CACHE.get(path)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+    counts = _compute_internal_dependents(db)
+    if path is not None:
+        _DEP_CACHE[path] = (sig, counts)
+    return counts
+
+
+def _compute_internal_dependents(db: Database) -> dict[str, int]:
     paths = [r["path"] for r in db.list_files()]
     pathset = set(paths)
     index = build_internal_index(paths)

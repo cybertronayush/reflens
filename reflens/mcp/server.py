@@ -378,6 +378,31 @@ def handle_message(msg: dict[str, Any]) -> Optional[dict[str, Any]]:
     return _error(req_id, -32601, f"method not found: {method}")
 
 
+def _maybe_prewarm_embedder() -> None:
+    """If any indexed repo has semantic embeddings, load the ONNX model in a
+    background thread so the first semantic query doesn't pay the ~600ms model
+    load on the critical path. No-op (and no model download) otherwise."""
+    try:
+        if not any(r.get("semantic") for r in list_repos()):
+            return
+    except Exception:
+        return
+
+    def _warm() -> None:
+        try:
+            from ..search.semantic import get_embedder
+
+            emb = get_embedder()
+            if emb is not None:
+                emb.embed_query("warm")  # also JITs the ONNX graph
+        except Exception:
+            pass
+
+    import threading
+
+    threading.Thread(target=_warm, daemon=True).start()
+
+
 def serve() -> int:
     """Run the stdio loop until EOF. Returns process exit code."""
     try:
@@ -386,6 +411,7 @@ def serve() -> int:
     except Exception:
         pass
 
+    _maybe_prewarm_embedder()
     print("reflens MCP server ready (stdio)", file=sys.stderr, flush=True)
     for line in sys.stdin:
         line = line.strip()

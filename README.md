@@ -136,7 +136,7 @@ pipx install "reflens[semantic] @ git+https://github.com/cybertronayush/reflens"
 reflens add /path/to/repo --name myref --semantic
 ```
 
-Embeddings use `fastembed` (ONNX, no torch). It's opt-in because CPU embedding is slow (~25 chunks/s); the vector matrix is cached in-process so repeat queries are ~milliseconds.
+Embeddings use `fastembed` (ONNX, no torch) and index the **symbol surface** (signature + docstring), not raw code bodies — so a concept query like "detect content type and pick a compressor" returns the actual function, not a doc page. It's opt-in (a one-time ~4 min build for a large repo); the vector matrix is cached in-process so repeat queries are ~3 ms. Lexical FTS still covers full file content, and byte-exact retrieval is unchanged.
 
 ## Compared to
 

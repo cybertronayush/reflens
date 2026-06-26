@@ -13,13 +13,14 @@ Design choices:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ..models import Chunk, Edge, FileRecord, Symbol
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL = """
 PRAGMA journal_mode=WAL;
@@ -75,10 +76,16 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
 
+-- Semantic index. `unit` is the kind of embedded thing ('symbol' by default —
+-- the dense signature+docstring surface; 'chunk' is supported for back-compat /
+-- body-level embeddings). Keyed by (unit, unit_id) so the index granularity can
+-- change without a schema migration.
 CREATE TABLE IF NOT EXISTS embeddings (
-    chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
-    dim      INTEGER NOT NULL,
-    vec      BLOB NOT NULL
+    unit    TEXT NOT NULL,
+    unit_id INTEGER NOT NULL,
+    dim     INTEGER NOT NULL,
+    vec     BLOB NOT NULL,
+    PRIMARY KEY (unit, unit_id)
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
@@ -209,11 +216,11 @@ class Database:
             n += 1
         return n
 
-    def set_embedding(self, chunk_id: int, dim: int, vec: bytes) -> None:
+    def set_embedding(self, unit: str, unit_id: int, dim: int, vec: bytes) -> None:
         self.conn.execute(
-            "INSERT INTO embeddings(chunk_id,dim,vec) VALUES(?,?,?) "
-            "ON CONFLICT(chunk_id) DO UPDATE SET dim=excluded.dim, vec=excluded.vec",
-            (chunk_id, dim, vec),
+            "INSERT INTO embeddings(unit,unit_id,dim,vec) VALUES(?,?,?,?) "
+            "ON CONFLICT(unit,unit_id) DO UPDATE SET dim=excluded.dim, vec=excluded.vec",
+            (unit, unit_id, dim, vec),
         )
 
     def commit(self) -> None:
@@ -308,8 +315,53 @@ class Database:
         return int(self.conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"])
 
     def iter_embeddings(self) -> Iterable[sqlite3.Row]:
-        yield from self.conn.execute("SELECT chunk_id, dim, vec FROM embeddings")
+        # Defensive: an index built by an older schema version (chunk-keyed) lacks
+        # the `unit` column; degrade to no-semantic until re-ingested.
+        try:
+            yield from self.conn.execute("SELECT unit, unit_id, dim, vec FROM embeddings")
+        except sqlite3.OperationalError:
+            return
 
     def has_embeddings(self) -> bool:
-        row = self.conn.execute("SELECT 1 FROM embeddings LIMIT 1").fetchone()
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM embeddings WHERE unit IS NOT NULL LIMIT 1"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
         return row is not None
+
+    def file_signature(self):
+        """(path, signature) of the backing DB file, for cache invalidation.
+
+        The signature (mtime_ns, size, wal-size) changes when the index is
+        re-ingested (atomic swap replaces the file), so caches keyed on it
+        invalidate automatically. Returns (None, None) for in-memory/odd DBs.
+        """
+        try:
+            path = None
+            for row in self.conn.execute("PRAGMA database_list"):
+                if row[1] == "main" and row[2]:
+                    path = row[2]
+                    break
+            if not path:
+                return None, None
+            st = os.stat(path)
+            wal = path + "-wal"
+            wal_sz = os.path.getsize(wal) if os.path.exists(wal) else 0
+            return path, (st.st_mtime_ns, st.st_size, wal_sz)
+        except OSError:
+            return None, None
+
+    def symbols_by_ids(self, ids: list[int]) -> dict[int, sqlite3.Row]:
+        """Map symbol ids -> row (with file path) for semantic result rendering."""
+        if not ids:
+            return {}
+        ph = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT s.id, s.name, s.kind, s.signature, s.start_line, s.end_line, "
+            f"f.path AS path FROM symbols s JOIN files f ON f.id=s.file_id "
+            f"WHERE s.id IN ({ph})",
+            ids,
+        ).fetchall()
+        return {int(r["id"]): r for r in rows}

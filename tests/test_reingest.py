@@ -34,18 +34,19 @@ def test_vector_cache_hit(sample_repo):
 
     ingest_source("demo", str(sample_repo))
     with Repo.open("demo") as r:
-        chunk_ids = [row["id"] for row in r.db.conn.execute("SELECT id FROM chunks LIMIT 2")]
-        assert len(chunk_ids) == 2
-        for i, cid in enumerate(chunk_ids):
+        sym_ids = [row["id"] for row in r.db.conn.execute("SELECT id FROM symbols LIMIT 2")]
+        assert len(sym_ids) == 2
+        for i, sid in enumerate(sym_ids):
             vec = np.zeros(3, dtype="float32")
             vec[i] = 1.0
-            r.db.set_embedding(cid, 3, vec.tobytes())
+            r.db.set_embedding("symbol", sid, 3, vec.tobytes())
         r.db.commit()
 
         hybrid._VEC_CACHE.clear()
-        ids1, m1 = hybrid._load_vectors(r.db, np)
-        assert sorted(ids1) == sorted(chunk_ids)
+        units1, ids1, m1 = hybrid._load_vectors(r.db, np)
+        assert sorted(ids1) == sorted(sym_ids)
         assert m1.shape == (2, 3)
+        assert all(u == "symbol" for u in units1)
         # second call returns the SAME cached object (no re-read)
-        ids2, m2 = hybrid._load_vectors(r.db, np)
+        units2, ids2, m2 = hybrid._load_vectors(r.db, np)
         assert m2 is m1 and ids2 is ids1

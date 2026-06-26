@@ -193,9 +193,12 @@ def build_digest(
         key=lambda x: -x["dependents"],
     )[:15]
 
-    # Repo-level signals (skip when scoped to a subtree to keep those fast).
-    decisions = _decisions(db, blobs, all_files) if path_glob is None else []
-    conventions = _conventions(db) if path_glob is None else []
+    # Repo-level signals (skip when scoped to a subtree; cached per DB signature
+    # since they re-read ADR blobs + run COUNT() queries on every map call).
+    if path_glob is None:
+        decisions, conventions = _repo_signals(db, blobs, all_files)
+    else:
+        decisions, conventions = [], []
 
     files: list[DigestFile] = []
     if include_symbols:
@@ -234,6 +237,22 @@ def build_digest(
 
 
 _DECISION_RE = re.compile(r"(adr|/spec/|proposal|decision|/rfc|realignment|architecture|vision)", re.I)
+_REPO_SIGNALS_CACHE: dict = {}
+
+
+def _repo_signals(db: Database, blobs: BlobStore, all_files: list):
+    """(decisions, conventions) cached per DB signature; both are repo-level and
+    re-reading them on every map call is wasted blob-reads + COUNT() queries."""
+    path, sig = db.file_signature()
+    if path is not None:
+        cached = _REPO_SIGNALS_CACHE.get(path)
+        if cached is not None and cached[0] == sig:
+            return cached[1], cached[2]
+    decisions = _decisions(db, blobs, all_files)
+    conventions = _conventions(db)
+    if path is not None:
+        _REPO_SIGNALS_CACHE[path] = (sig, decisions, conventions)
+    return decisions, conventions
 
 
 def _decisions(db: Database, blobs: BlobStore, all_files: list) -> list[dict[str, Any]]:

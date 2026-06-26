@@ -18,6 +18,18 @@ from typing import Optional
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 
+def compose_symbol_text(
+    kind: object, name: object, signature: object, docstring: object
+) -> str:
+    """The text embedded for a symbol: its kind, name, signature, and docstring —
+    the distilled intent, far denser than a raw code body."""
+    parts = [str(p) for p in (kind, name, signature) if p]
+    text = " ".join(parts)
+    if docstring:
+        text += f": {docstring}"
+    return text or (str(name) if name else "")
+
+
 class Embedder:
     def __init__(self, model_name: str) -> None:
         from fastembed import TextEmbedding  # type: ignore

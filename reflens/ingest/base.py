@@ -298,7 +298,7 @@ def _iter_files(kind, src_path, max_file_bytes, include_binary, result):
 
 def _run_semantic_pass(db: Database, embed_model: Optional[str], result: IngestResult) -> None:
     try:
-        from ..search.semantic import get_embedder
+        from ..search.semantic import compose_symbol_text, get_embedder
     except Exception:
         result.warnings.append("semantic requested but search.semantic import failed; skipped")
         return
@@ -317,16 +317,25 @@ def _run_semantic_pass(db: Database, embed_model: Optional[str], result: IngestR
         if not batch_ids:
             return
         vecs = embedder.embed(batch_texts)
-        for cid, vec in zip(batch_ids, vecs):
-            db.set_embedding(cid, dim, vec)
+        for sid, vec in zip(batch_ids, vecs):
+            db.set_embedding("symbol", sid, dim, vec)
         batch_ids.clear()
         batch_texts.clear()
 
-    for row in db.iter_all_chunks():
+    # Embed the dense SYMBOL surface (signature + docstring), not raw code bodies:
+    # ~6x faster and a better concept-match target. Full content stays in Tier 2
+    # and lexical FTS, so byte-exact retrieval is unaffected.
+    for row in db.conn.execute("SELECT id, kind, name, signature, docstring FROM symbols"):
         batch_ids.append(int(row["id"]))
-        batch_texts.append(row["text"])
+        batch_texts.append(
+            compose_symbol_text(row["kind"], row["name"], row["signature"], row["docstring"])
+        )
         if len(batch_ids) >= 256:
             flush()
             db.commit()
     flush()
     db.commit()
+    if not db.has_embeddings():
+        result.warnings.append(
+            "semantic: repo has no extractable symbols to embed; lexical search still applies"
+        )
