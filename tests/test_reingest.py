@@ -27,7 +27,9 @@ def test_reingest_is_atomic_and_clean(sample_repo):
 
 
 def test_vector_cache_hit(sample_repo):
-    np = __import__("numpy")
+    import pytest
+
+    np = pytest.importorskip("numpy")
     from reflens.search import hybrid
 
     ingest_source("demo", str(sample_repo))

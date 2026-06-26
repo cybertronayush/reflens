@@ -9,7 +9,6 @@ when combining heterogeneous rankers.
 from __future__ import annotations
 
 import os
-import struct
 from typing import Optional
 
 from ..models import Hit
