@@ -36,9 +36,14 @@ def list_repos() -> list[dict[str, Any]]:
         try:
             db = Database.open(dbp)
             m = db.all_meta()
+            # Report semantic by LIVE state, not just stale meta — a repo indexed
+            # under an older embeddings schema reads has_embeddings()==False and
+            # should show semantic=False (and prompt a re-ingest), not lie.
+            semantic = bool((m.get("config") or {}).get("semantic")) and db.has_embeddings()
             db.close()
         except Exception:
             m = {}
+            semantic = False
         out.append(
             {
                 "name": child.name,
@@ -48,7 +53,7 @@ def list_repos() -> list[dict[str, Any]]:
                 "source": m.get("source_ref"),
                 "kind": m.get("source_kind"),
                 "ingested_at": m.get("ingested_at"),
-                "semantic": bool((m.get("config") or {}).get("semantic")),
+                "semantic": semantic,
             }
         )
     return out

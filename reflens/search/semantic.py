@@ -13,6 +13,7 @@ it (embeddings.vec is contiguous float32).
 from __future__ import annotations
 
 import functools
+import threading
 from typing import Optional
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
@@ -61,12 +62,11 @@ class Embedder:
         return self.embed([text])[0]
 
 
-@functools.lru_cache(maxsize=4)
-def get_embedder(model_name: Optional[str] = None) -> Optional[Embedder]:
-    """Return a (cached) Embedder, or None if the optional backend isn't installed.
+_EMBEDDER_LOCK = threading.Lock()
 
-    Cached so the long-lived MCP server loads the ONNX model once, not per query.
-    """
+
+@functools.lru_cache(maxsize=4)
+def _build_embedder(model_name: Optional[str]) -> Optional[Embedder]:
     try:
         import numpy  # noqa: F401  (required for storage/search)
         import fastembed  # noqa: F401
@@ -76,3 +76,14 @@ def get_embedder(model_name: Optional[str] = None) -> Optional[Embedder]:
         return Embedder(model_name or DEFAULT_MODEL)
     except Exception:
         return None
+
+
+def get_embedder(model_name: Optional[str] = None) -> Optional[Embedder]:
+    """Return a (cached) Embedder, or None if the optional backend isn't installed.
+
+    Cached so the long-lived MCP server loads the ONNX model once, not per query.
+    The lock serializes construction so the background pre-warm thread and a
+    concurrent first query can't both load the model (single load, not double).
+    """
+    with _EMBEDDER_LOCK:
+        return _build_embedder(model_name)
