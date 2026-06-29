@@ -152,6 +152,8 @@ reflens add /path/to/repo --name myref --semantic
 
 Embeddings use `fastembed` (ONNX, no torch) and index the **symbol surface** (signature + docstring), not raw code bodies — so a concept query like "detect content type and pick a compressor" returns the actual function, not a doc page. It's opt-in (a one-time ~4 min build for a large repo); the vector matrix is cached in-process so repeat queries are ~3 ms. Lexical FTS still covers full file content, and byte-exact retrieval is unchanged.
 
+**Re-ingest is incremental.** A symbol's embedding is reused when its surface text is unchanged, so re-indexing a repo you've already built only embeds what actually changed — an unchanged re-ingest of a 24k-symbol repo drops from **~250 s to ~8 s (~30×)**. Reuse is gated on an exact pipeline fingerprint (model + dim + version), so vectors are never mixed across models or composition changes. See [`CHANGELOG`](CHANGELOG.md) and `benchmark/perf_incremental.py`.
+
 ## Compared to
 
 | | reflens | clone + agent `grep` | Repomix / gitingest | editor codebase index |

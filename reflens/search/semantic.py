@@ -18,6 +18,12 @@ from typing import Optional
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
+# Bump whenever `compose_symbol_text` OR the embedding pipeline changes in a way
+# that alters the produced vectors. Cross-ingest embedding reuse is refused
+# unless the fingerprint matches, so a bump forces a clean re-embed instead of
+# silently mixing vector "generations" in one index.
+_EMBED_PIPELINE_VERSION = 1
+
 
 def compose_symbol_text(
     kind: object, name: object, signature: object, docstring: object
@@ -60,6 +66,18 @@ class Embedder:
 
     def embed_query(self, text: str) -> bytes:
         return self.embed([text])[0]
+
+
+def embed_fingerprint(embedder: Embedder) -> str:
+    """Identity of the vector-producing pipeline: resolved model, dim, version.
+
+    Two indexes with the same fingerprint produce byte-identical vectors for the
+    same input text, so a stored vector is reuse-compatible across ingests iff
+    the fingerprints match. Uses the *resolved* model name (not a nullable
+    request), so the default-model case can't be confused with a different model
+    that happens to share a dimension.
+    """
+    return f"{embedder.model_name}|{embedder.dim}|v{_EMBED_PIPELINE_VERSION}"
 
 
 _EMBEDDER_LOCK = threading.Lock()

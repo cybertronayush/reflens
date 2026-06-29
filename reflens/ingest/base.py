@@ -9,8 +9,10 @@ serving is safe).
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -92,12 +94,17 @@ def ingest_source(
     embed_model: Optional[str] = None,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     include_binary: bool = False,
+    reuse_embeddings: bool = True,
     progress: Optional[ProgressFn] = None,
 ) -> IngestResult:
     """Ingest a local directory, a Repomix .md dump, or a remote git URL.
 
     Remote URLs are shallow-cloned to a temp dir, ingested, then cleaned up; the
     stored ``source_ref`` is the URL.
+
+    When ``reuse_embeddings`` is true (default), a re-ingest reuses any prior
+    embedding whose symbol surface is unchanged instead of recomputing it — the
+    expensive semantic pass then only runs over genuinely new/changed symbols.
     """
     clone_tmp: Optional[Path] = None
     if not Path(source).expanduser().exists() and _looks_like_git_url(source):
@@ -115,6 +122,7 @@ def ingest_source(
             embed_model=embed_model,
             max_file_bytes=max_file_bytes,
             include_binary=include_binary,
+            reuse_embeddings=reuse_embeddings,
             progress=progress,
         )
     finally:
@@ -132,12 +140,17 @@ def _run_ingest(
     embed_model: Optional[str],
     max_file_bytes: int,
     include_binary: bool,
+    reuse_embeddings: bool,
     progress: Optional[ProgressFn],
 ) -> IngestResult:
     kind, src_path = _classify_source(classify_target)
     repo_name = paths.slugify_name(name) if name else derive_name(original_source)
 
     final_path = paths.repo_dir(repo_name)
+    # The previous index (if any) is still live at final_path during this
+    # out-of-place build, so we can read its embeddings to reuse unchanged ones.
+    prev_db_path = final_path / "index.db"
+    prev_db_path = prev_db_path if reuse_embeddings and prev_db_path.exists() else None
     repos_base = paths.repos_dir()
     repos_base.mkdir(parents=True, exist_ok=True)
     # Clean stale temp dirs left by a previously interrupted ingest.
@@ -191,7 +204,7 @@ def _run_ingest(
         db.commit()
 
         if semantic:
-            _run_semantic_pass(db, embed_model, result)
+            _run_semantic_pass(db, embed_model, result, prev_db_path=prev_db_path)
 
         commit_sha = gitmeta.head_sha(src_path) if kind == "dir" else None
         if kind == "dir":
@@ -299,9 +312,94 @@ def _iter_files(kind, src_path, max_file_bytes, include_binary, result):
             yield item.path, item.data, text
 
 
-def _run_semantic_pass(db: Database, embed_model: Optional[str], result: IngestResult) -> None:
+def _load_reuse_map(
+    prev_db_path: Optional[Path], fingerprint: str, dim: int
+) -> dict[str, bytes]:
+    """Map ``composed-symbol-text -> stored vector bytes`` from a prior index.
+
+    A symbol's embedding is a deterministic function of its composed surface
+    text under a fixed embedding pipeline, so an unchanged surface can reuse its
+    exact prior vector bytes. Reuse is refused unless the prior index's stored
+    ``embed_fingerprint`` exactly matches the current one (resolved model + dim +
+    pipeline version) — vectors from a different model OR a different
+    `compose_symbol_text` are not interchangeable, and a missing fingerprint
+    (pre-0.3 index) is treated as incompatible. Each candidate vector is also
+    length-checked against ``dim`` before reuse.
+
+    The prior index is opened ``immutable=1`` (genuinely read-only — no `-shm`/
+    `-wal` sidecars are written into the live prior directory), which is safe
+    because nothing writes the old index during this out-of-place build. Reuse
+    is a pure optimization: ANY error/incompatibility returns ``{}`` and the
+    caller falls back to a full embed — it must never crash or alter an ingest.
+
+    Memory note: this materializes one dict of all prior vectors (bounded by the
+    prior symbol count), separate from the streaming Tier-2 file pass.
+    """
     try:
-        from ..search.semantic import compose_symbol_text, get_embedder
+        if prev_db_path is None or not Path(prev_db_path).exists():
+            return {}
+    except OSError:
+        return {}
+    try:
+        from urllib.request import pathname2url
+
+        from ..search.semantic import compose_symbol_text
+
+        uri = f"file:{pathname2url(str(Path(prev_db_path)))}?immutable=1"
+        conn = sqlite3.connect(uri, uri=True)
+    except Exception:
+        return {}
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='embed_fingerprint'"
+        ).fetchone()
+        prior_fp = None
+        if row is not None:
+            try:
+                parsed = json.loads(row["value"])
+                prior_fp = parsed if isinstance(parsed, str) else None
+            except (ValueError, TypeError):
+                prior_fp = None
+        if prior_fp is None or prior_fp != fingerprint:
+            return {}  # unknown/different embedding pipeline => not portable
+        vec_nbytes = dim * 4  # float32
+        out: dict[str, bytes] = {}
+        for r in conn.execute(
+            "SELECT s.kind, s.name, s.signature, s.docstring, e.vec, e.dim "
+            "FROM symbols s JOIN embeddings e "
+            "ON e.unit='symbol' AND e.unit_id = s.id"
+        ):
+            vec = r["vec"]
+            if (
+                r["dim"] != dim
+                or not isinstance(vec, (bytes, bytearray))
+                or len(vec) != vec_nbytes
+            ):
+                continue
+            text = compose_symbol_text(r["kind"], r["name"], r["signature"], r["docstring"])
+            out[text] = bytes(vec)
+        return out
+    except Exception:
+        # Optimization only: any failure (incompatible schema, read error, …)
+        # degrades to a full embed rather than breaking the ingest.
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _run_semantic_pass(
+    db: Database,
+    embed_model: Optional[str],
+    result: IngestResult,
+    *,
+    prev_db_path: Optional[Path] = None,
+) -> None:
+    try:
+        from ..search.semantic import compose_symbol_text, embed_fingerprint, get_embedder
     except Exception:
         result.warnings.append("semantic requested but search.semantic import failed; skipped")
         return
@@ -312,9 +410,16 @@ def _run_semantic_pass(db: Database, embed_model: Optional[str], result: IngestR
             "(pip install 'reflens[semantic]'); lexical search still works"
         )
         return
+    dim = embedder.dim
+    fingerprint = embed_fingerprint(embedder)
+    # Reuse unchanged vectors from the prior index so the embed pass only runs
+    # over genuinely new/changed symbol surfaces (re-ingest goes from minutes to
+    # seconds when little changed). Empty unless the prior index's embedding
+    # pipeline fingerprint matches exactly.
+    reuse = _load_reuse_map(prev_db_path, fingerprint, dim)
+
     batch_ids: list[int] = []
     batch_texts: list[str] = []
-    dim = embedder.dim
 
     def flush() -> None:
         if not batch_ids:
@@ -322,6 +427,7 @@ def _run_semantic_pass(db: Database, embed_model: Optional[str], result: IngestR
         vecs = embedder.embed(batch_texts)
         for sid, vec in zip(batch_ids, vecs):
             db.set_embedding("symbol", sid, dim, vec)
+        result.embedded_symbols += len(batch_ids)
         batch_ids.clear()
         batch_texts.clear()
 
@@ -329,14 +435,21 @@ def _run_semantic_pass(db: Database, embed_model: Optional[str], result: IngestR
     # ~6x faster and a better concept-match target. Full content stays in Tier 2
     # and lexical FTS, so byte-exact retrieval is unaffected.
     for row in db.conn.execute("SELECT id, kind, name, signature, docstring FROM symbols"):
+        text = compose_symbol_text(row["kind"], row["name"], row["signature"], row["docstring"])
+        cached = reuse.get(text)
+        if cached is not None:
+            db.set_embedding("symbol", int(row["id"]), dim, cached)
+            result.reused_embeddings += 1
+            continue
         batch_ids.append(int(row["id"]))
-        batch_texts.append(
-            compose_symbol_text(row["kind"], row["name"], row["signature"], row["docstring"])
-        )
+        batch_texts.append(text)
         if len(batch_ids) >= 256:
             flush()
             db.commit()
     flush()
+    # Record the pipeline fingerprint so a later ingest can prove its stored
+    # vectors are reuse-compatible with this one (or refuse if not).
+    db.set_meta("embed_fingerprint", fingerprint)
     db.commit()
     if not db.has_embeddings():
         result.warnings.append(

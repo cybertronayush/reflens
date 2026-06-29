@@ -87,3 +87,5 @@ class IngestResult:
     edge_count: int
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    embedded_symbols: int = 0
+    reused_embeddings: int = 0

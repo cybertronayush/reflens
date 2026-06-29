@@ -4,6 +4,34 @@ All notable changes to reflens are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-06-29
+
+### Added
+- **Incremental semantic re-ingest.** A re-ingest now reuses a symbol's prior
+  embedding when its composed surface text is unchanged, so the expensive embed
+  pass only runs over genuinely new/changed symbols. Measured on headroom
+  (24,464 symbols): an unchanged re-ingest dropped from **~250 s to ~8 s (~30×)**
+  (two runs: 255→7.6 s and 249.9→8.4 s). On by default;
+  `ingest_source(..., reuse_embeddings=False)`
+  forces a full embed. Inspired by content-keyed caching in the DeepSpec data
+  pipeline (`jsonl_dataset` / `target_cache`).
+- **Embedding pipeline fingerprint** (`embed_fingerprint`: resolved model + dim +
+  pipeline version), stored per index. Reuse is refused unless the prior
+  fingerprint matches exactly, so vectors are never mixed across models or across
+  a change to `compose_symbol_text`. Bump `_EMBED_PIPELINE_VERSION` to force a
+  clean re-embed when the embedding pipeline changes.
+- `benchmark/perf_incremental.py`: reproducible full-vs-incremental measurement.
+
+### Hardened (from an adversarial review of the reuse path)
+- The prior index is opened `immutable=1` — genuinely read-only, writing no
+  `-shm`/`-wal` sidecars into the live prior directory.
+- Reuse-map loader degrades to a full embed (never crashes the ingest) on any
+  malformed fingerprint meta, unreadable/incompatible prior index, or error; the
+  file URI is properly encoded (paths with spaces/unicode no longer silently
+  disable reuse); each candidate vector is length-validated against the model dim.
+- A pre-0.3 index (no fingerprint) is treated as incompatible: the first
+  re-ingest re-embeds once to establish the fingerprint, then reuse kicks in.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
