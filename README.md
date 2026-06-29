@@ -141,6 +141,8 @@ The byte-exact store is also fuzz-tested: `tests/test_lossless_fuzz.py` throws r
 
 Both surface the target; the difference is *usability*. reflens puts it in the top 8 at ~100 tokens; grep's content-word union over a large repo returns 500–1,300 files because words like *content*, *code*, and *cache* appear nearly everywhere — an answer vs. a haystack. **reflens also loses 2/12** (paraphrastic/acronym queries whose words don't overlap the implementation's symbol surface — e.g. a query saying "strip comments" against code that calls itself "AST-based syntax-preserving compression"). Both losses are documented with root cause and the known fix (query expansion). Building the benchmark also surfaced and fixed a real bug: tests out-ranked implementations on "where is X" queries, so reflens now demotes (never drops) test files — skipped when the query is itself about tests.
 
+[`EVAL.md`](EVAL.md) goes further — *does the answer file reach a fixed-budget context window?* At a realistic budget, reflens reads the answer file's slice where grep-and-read / paste-the-repo essentially never do (≥5/12 vs 0/12). It's an honest, **directional** result (reflens is ~50% absolute, and the methodology + its four iterations are disclosed in full), not a final-answer-correctness proof.
+
 ## Semantic search (opt-in)
 
 Lexical FTS5 is the instant default and is excellent for code (symbol names, error strings). For concept queries ("how do they handle retries?"), build embeddings:
