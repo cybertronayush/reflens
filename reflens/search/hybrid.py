@@ -17,6 +17,33 @@ _RRF_K = 60
 _SNIPPET_LINES = 16
 _SNIPPET_CHARS = 1000
 
+# Test/spec files describe behavior in plain English (their names and docstrings
+# read like the query), so they out-compete the implementation on "where is X"
+# queries. We demote — never drop — them: recall is preserved (a test still
+# appears), but an implementation that ties on relevance ranks above it. Skipped
+# entirely when the query is itself about tests. This mirrors how Sourcegraph,
+# GitHub code search, and ctags-based tools treat tests for definition lookups.
+_TEST_PENALTY = 0.4
+_TEST_DIR_SEGMENTS = {"test", "tests", "spec", "specs", "__tests__", "testing"}
+_TEST_NAME_PREFIXES = ("test_", "test-")
+_TEST_NAME_INFIXES = ("_test.", "-test.", ".test.", ".spec.", "_spec.", "-spec.")
+
+
+def _is_test_path(path: str) -> bool:
+    p = path.lower()
+    segments = p.split("/")
+    if any(seg in _TEST_DIR_SEGMENTS for seg in segments[:-1]):
+        return True
+    base = segments[-1]
+    if base.startswith(_TEST_NAME_PREFIXES):
+        return True
+    return any(infix in base for infix in _TEST_NAME_INFIXES)
+
+
+def _query_wants_tests(query: str) -> bool:
+    toks = query.lower().replace("-", " ").replace("_", " ").split()
+    return any(t in ("test", "tests", "spec", "specs", "testing") for t in toks)
+
 # In-process cache of (signature, units, ids, matrix) per DB file. Without it,
 # semantic search re-reads and re-stacks every vector from SQLite on every query —
 # the dominant per-query cost. The signature changes when the index is re-ingested
@@ -143,9 +170,12 @@ def search(
             best.setdefault(key, h)
             sources.setdefault(key, set()).add(h.source)
 
+    penalize_tests = not _query_wants_tests(query)
     out: list[Hit] = []
     for key, sc in scores.items():
         h = best[key]
+        if penalize_tests and _is_test_path(h.path):
+            sc *= _TEST_PENALTY
         h.score = round(sc, 6)
         srcs = sources[key]
         h.source = "hybrid" if len(srcs) > 1 else next(iter(srcs))

@@ -127,6 +127,20 @@ $ reflens verify myref
 
 Every stored file is content-addressed and re-hashed on read; `verify` reconstructs all of them and compares SHA-256. **Directory/git ingests are byte-identical to source.** Repomix `--compress` dumps are lossless *with respect to the dump* (their bodies were already stripped) — reflens detects and warns about this; ingest the directory for true source fidelity.
 
+The byte-exact store is also fuzz-tested: `tests/test_lossless_fuzz.py` throws random bytes (every size from 0 to 256 KB), pathological inputs (nulls, invalid UTF-8, BOMs), and arbitrary unicode at the blob layer and asserts exact round-trips, content-addressing, and corruption detection (a blob that decompresses to the wrong bytes fails its SHA check instead of returning garbage).
+
+## Proof: retrieval benchmark (incl. where it loses)
+
+[**`BENCHMARKS.md`**](BENCHMARKS.md) is a reproducible harness (`benchmark/run.py`) comparing reflens's hybrid search against the baseline an agent actually uses — ripgrep the query's content words over the cloned source — on 12 plain-English retrieval tasks over a real 1,750-file Python+Rust repo:
+
+| metric | reflens | native grep |
+|---|--:|--:|
+| hit-rate @8 | **10/12 (83%)** | 12/12 |
+| MRR | **0.46** | — |
+| mean tokens to read to get the answer | **108** | ~4,200,000 |
+
+Both surface the target; the difference is *usability*. reflens puts it in the top 8 at ~100 tokens; grep's content-word union over a large repo returns 500–1,300 files because words like *content*, *code*, and *cache* appear nearly everywhere — an answer vs. a haystack. **reflens also loses 2/12** (paraphrastic/acronym queries whose words don't overlap the implementation's symbol surface — e.g. a query saying "strip comments" against code that calls itself "AST-based syntax-preserving compression"). Both losses are documented with root cause and the known fix (query expansion). Building the benchmark also surfaced and fixed a real bug: tests out-ranked implementations on "where is X" queries, so reflens now demotes (never drops) test files — skipped when the query is itself about tests.
+
 ## Semantic search (opt-in)
 
 Lexical FTS5 is the instant default and is excellent for code (symbol names, error strings). For concept queries ("how do they handle retries?"), build embeddings:
@@ -155,7 +169,8 @@ reflens is for **"I want my agent to learn from N flagship repos I don't want cl
 - **It's navigable, not omniscient.** The agent must query well; the architecture-first design + AGENTS.md guidance steer it, but a lazy agent still gets shallow context. Name the repo for reliability.
 - **Semantic ingest is slow** (CPU embeddings). Lexical-only is instant and the default.
 - **`reflens_history` needs a live git source dir** — unavailable for URL-cloned or repomix repos (the digest still shows recent commit subjects).
-- **Not yet benchmarked** against the "just clone it" baseline. The design is sound; measured task-success deltas are future work.
+- **Retrieval misses paraphrastic/acronym queries** whose words don't overlap the code's symbol surface or body (measured: 2/12 in [`BENCHMARKS.md`](BENCHMARKS.md)). Query expansion is the planned fix. For an exact token you already know, plain `grep` is equal and simpler — reflens wins on concept queries over large repos, not on everything.
+- **The grep token-cost ratio scales with repo size** — huge on a 1,750-file repo, negligible on a 50-file one. On tiny repos, just grep.
 
 ## Install & setup
 
