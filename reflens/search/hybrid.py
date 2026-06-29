@@ -74,6 +74,10 @@ def _semantic_symbol_hits(
     if matrix is None or not ids:
         return []
     qvec = np.frombuffer(embedder.embed_query(query), dtype="float32")
+    if matrix.shape[1] != qvec.shape[0]:
+        # Index built with a different-dimension embedding model than the one
+        # loaded now — degrade to lexical instead of raising on the matmul.
+        return []
     sims = matrix @ qvec  # vectors are L2-normalized => dot == cosine
     top = np.argsort(-sims)[:limit]
     sym_ids = [ids[i] for i in top if units[i] == "symbol"]

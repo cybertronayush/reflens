@@ -242,6 +242,9 @@ def _run_ingest(
                 "max_file_bytes": max_file_bytes,
                 "include_binary": include_binary,
                 "repomix_transforms": transforms,
+                # Record the embedding model so queries use the SAME model the
+                # index was built with (custom models have different dims).
+                "embed_model": embed_model,
             },
         )
         db.commit()

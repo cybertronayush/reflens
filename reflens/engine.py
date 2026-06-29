@@ -148,7 +148,9 @@ class Repo:
 
     # ---- search ----------------------------------------------------------
     def search(self, query: str, *, k: int = 10, mode: str = "auto") -> list[Hit]:
-        return _search(self.db, query, k=k, mode=mode)
+        # Query with the SAME embedding model the index was built with.
+        embed_model = (self.db.get_meta("config") or {}).get("embed_model")
+        return _search(self.db, query, k=k, mode=mode, embed_model=embed_model)
 
     # ---- read (Tier-2, byte-exact) --------------------------------------
     def read(
