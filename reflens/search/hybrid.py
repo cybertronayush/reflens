@@ -8,6 +8,7 @@ when combining heterogeneous rankers.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from ..models import Hit
@@ -43,6 +44,59 @@ def _is_test_path(path: str) -> bool:
 def _query_wants_tests(query: str) -> bool:
     toks = query.lower().replace("-", " ").replace("_", " ").split()
     return any(t in ("test", "tests", "spec", "specs", "testing") for t in toks)
+
+
+# Dependency-aware result selection (opt-in). RRF scores each hit independently,
+# so a top-k list can be dominated by near-duplicates (e.g. several tests of the
+# same function) — the retrieval analog of DSpark's "multi-modal collision". MMR
+# conditions result k on results 1..k-1 (the semi-autoregressive head), and the
+# marginal-value early-stop is the greedy prefix scheduler: keep admitting while
+# a candidate adds net value, stop when redundancy outweighs relevance.
+_MMR_LAMBDA = 0.5  # relevance weight; (1-λ) weights the redundancy penalty.
+_REL_FLOOR = 0.1  # stop once the best candidate's relevance falls below this.
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def _redundancy_tokens(h: Hit) -> set:
+    """Bag of content words for a hit — its symbol name plus the snippet head.
+    Two hits that describe the same code share most of these."""
+    text = f"{h.name or ''} {(h.snippet or '')[:240]}"
+    return {w.lower() for w in _WORD_RE.findall(text) if len(w) > 1}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return inter / (len(a) + len(b) - inter)
+
+
+def _mmr_select(ranked: list[Hit], k: int, lambda_: float = _MMR_LAMBDA) -> list[Hit]:
+    """Re-rank a relevance-sorted list by Maximal Marginal Relevance and cut the
+    redundant/low-value tail. Always keeps the top (highest-relevance) hit and
+    returns between 1 and k hits. Relevance is each hit's fused score normalized
+    to the top hit; redundancy is Jaccard overlap of content words with the
+    already-selected hits.
+    """
+    if len(ranked) <= 1:
+        return ranked[:k]
+    top = ranked[0].score or 0.0
+    norm = top if top > 0 else 1.0
+    toks = {id(h): _redundancy_tokens(h) for h in ranked}
+    selected = [ranked[0]]
+    pool = ranked[1:]
+    while pool and len(selected) < k:
+        best_i, best_val, best_rel = -1, 0.0, 0.0
+        for i, h in enumerate(pool):
+            rel = (h.score or 0.0) / norm
+            red = max(_jaccard(toks[id(h)], toks[id(s)]) for s in selected)
+            val = lambda_ * rel - (1.0 - lambda_) * red
+            if best_i == -1 or val > best_val:
+                best_i, best_val, best_rel = i, val, rel
+        if best_val <= 0.0 or best_rel < _REL_FLOOR:
+            break  # remaining candidates are redundant or irrelevant -> stop
+        selected.append(pool.pop(best_i))
+    return selected
 
 # In-process cache of (signature, units, ids, matrix) per DB file. Without it,
 # semantic search re-reads and re-stacks every vector from SQLite on every query —
@@ -129,6 +183,7 @@ def search(
     k: int = 10,
     mode: str = "auto",
     embed_model: Optional[str] = None,
+    diversify: bool = False,
 ) -> list[Hit]:
     query = (query or "").strip()
     if not query:
@@ -181,4 +236,6 @@ def search(
         h.source = "hybrid" if len(srcs) > 1 else next(iter(srcs))
         out.append(h)
     out.sort(key=lambda h: h.score, reverse=True)
+    if diversify:
+        return _mmr_select(out, k)
     return out[:k]

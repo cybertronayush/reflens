@@ -62,8 +62,8 @@ def content_words(q: str) -> list[str]:
     return [w for w in dict.fromkeys(words) if w not in _STOP]
 
 
-def run_reflens(repo, query: str, target: str, k: int = 8):
-    hits = repo.search(query, k=k, mode="auto")
+def run_reflens(repo, query: str, target: str, k: int = 8, diversify: bool = False):
+    hits = repo.search(query, k=k, mode="auto", diversify=diversify)
     cum = 0
     for rank, h in enumerate(hits, 1):
         cum += _toks(h.snippet or "")
@@ -101,6 +101,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="hr")
     ap.add_argument("-o", "--output", default=None)
+    ap.add_argument("--diversify", action="store_true",
+                    help="enable MMR diversification + early-stop cutoff")
     args = ap.parse_args()
 
     from reflens.engine import Repo
@@ -111,7 +113,7 @@ def main() -> int:
     rl_found = rl_tok = rr = 0
     bl_found = bl_tok = 0
     for q, target in TASKS:
-        rf, rank, rtok = run_reflens(repo, q, target)
+        rf, rank, rtok = run_reflens(repo, q, target, diversify=args.diversify)
         bf, nfiles, btok = run_baseline(src, q, target)
         rl_found += int(rf)
         rl_tok += rtok

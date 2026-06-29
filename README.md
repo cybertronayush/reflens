@@ -154,6 +154,8 @@ Embeddings use `fastembed` (ONNX, no torch) and index the **symbol surface** (si
 
 **Re-ingest is incremental.** A symbol's embedding is reused when its surface text is unchanged, so re-indexing a repo you've already built only embeds what actually changed — an unchanged re-ingest of a 24k-symbol repo drops from **~250 s to ~8 s (~30×)**. Reuse is gated on an exact pipeline fingerprint (model + dim + version), so vectors are never mixed across models or composition changes. See [`CHANGELOG`](CHANGELOG.md) and `benchmark/perf_incremental.py`.
 
+**Diversified results (opt-in).** `reflens_search(..., diversify=true)` re-ranks by Maximal Marginal Relevance and trims redundant/low-value hits, so the list covers more distinct code in fewer tokens — useful for broad "where/how" queries that otherwise return several near-duplicate matches (e.g. many tests of one function). On the benchmark it lifts MRR 0.46 → 0.51 and cuts tokens-to-answer ~13% with no hit-rate loss. Default ranking is unchanged.
+
 ## Compared to
 
 | | reflens | clone + agent `grep` | Repomix / gitingest | editor codebase index |

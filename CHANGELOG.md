@@ -4,6 +4,26 @@ All notable changes to reflens are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-06-29
+
+### Added
+- **Dependency-aware retrieval (`diversify`, opt-in).** RRF scores each hit
+  independently, so a top-k list can be dominated by near-duplicates (e.g.
+  several tests of the same function) — the retrieval analog of DSpark's
+  "multi-modal collision". `search(..., diversify=True)` (also a `reflens_search`
+  tool flag) re-ranks by Maximal Marginal Relevance — conditioning result *k* on
+  results 1..*k*−1, DSpark's semi-autoregressive head — and trims the redundant/
+  low-value tail via a marginal-value early-stop (DSpark's greedy prefix
+  scheduler). Measured on headroom (12 NL retrieval tasks): hit-rate@8 unchanged
+  (10/12), **MRR 0.46 → 0.51, mean tokens-to-answer 108 → 94 (−13%)**. Default
+  ranking is unchanged. Learned by auditing DeepSpec via the reflens MCP through
+  the `code-review-and-quality` five-axis lens.
+
+### Fixed
+- Stale temp-build cleanup no longer deletes a **concurrent** same-repo ingest's
+  live build dir: `.reflens-tmp-<repo>-<pid>` leftovers are reaped only when the
+  pid is dead (and never our own / a different repo / an unparseable suffix).
+
 ## [0.3.0] — 2026-06-29
 
 ### Added

@@ -95,6 +95,11 @@ def tool_specs() -> list[dict[str, Any]]:
                     "k": {"type": "integer", "default": 10, "description": "Max results."},
                     "mode": {"type": "string", "enum": ["auto", "lexical", "semantic", "hybrid"],
                              "default": "auto"},
+                    "diversify": {"type": "boolean", "default": False, "description": (
+                        "Diversify results: drop near-duplicate hits (e.g. several tests of the "
+                        "same function) and trim the low-value tail, so the list covers more "
+                        "distinct code in fewer tokens. Recommended for broad 'where/how' queries."
+                    )},
                 },
                 "required": ["repo", "query"],
                 "additionalProperties": False,
@@ -290,7 +295,10 @@ def handle_call(name: str, args: dict[str, Any]) -> tuple[str, bool]:
             query = args.get("query", "")
             mode = args.get("mode", "auto")
             with Repo.open(repo_name) as r:
-                hits = r.search(query, k=int(args.get("k", 10)), mode=mode)
+                hits = r.search(
+                    query, k=int(args.get("k", 10)), mode=mode,
+                    diversify=bool(args.get("diversify", False)),
+                )
             return _fmt_search(repo_name, query, hits, mode), False
 
         if name == "reflens_read":

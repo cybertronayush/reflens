@@ -57,6 +57,35 @@ def _classify_source(source: str) -> tuple[str, Path]:
     raise FileNotFoundError(f"source not found: {source}")
 
 
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid currently exists (signal 0 probes it)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except OSError:
+        return False
+    return True
+
+
+def _reap_stale_workdirs(repos_base: Path, repo_name: str) -> None:
+    """Remove leftover ``.reflens-tmp-<repo>-<pid>`` build dirs from interrupted
+    ingests, skipping our own and any whose pid is still alive — so a concurrent
+    ingest of the same repo can't have its in-flight build dir deleted."""
+    prefix = f".reflens-tmp-{repo_name}-"
+    for stale in repos_base.glob(f"{prefix}*"):
+        suffix = stale.name[len(prefix):]
+        try:
+            pid = int(suffix)
+        except ValueError:
+            continue  # unrecognized suffix — leave it untouched
+        if pid == os.getpid() or _pid_alive(pid):
+            continue
+        shutil.rmtree(stale, ignore_errors=True)
+
+
 def _looks_like_git_url(source: str) -> bool:
     s = source.strip()
     return s.startswith(("http://", "https://", "git://", "ssh://", "git@"))
@@ -153,9 +182,9 @@ def _run_ingest(
     prev_db_path = prev_db_path if reuse_embeddings and prev_db_path.exists() else None
     repos_base = paths.repos_dir()
     repos_base.mkdir(parents=True, exist_ok=True)
-    # Clean stale temp dirs left by a previously interrupted ingest.
-    for stale in repos_base.glob(f".reflens-tmp-{repo_name}-*"):
-        shutil.rmtree(stale, ignore_errors=True)
+    # Clean stale temp dirs left by a PREVIOUS interrupted ingest — but never one
+    # whose pid is still alive (that would corrupt a concurrent ingest's build).
+    _reap_stale_workdirs(repos_base, repo_name)
     # Build the new index OUT OF PLACE so the live index keeps serving until the
     # atomic swap at the very end.
     work_path = repos_base / f".reflens-tmp-{repo_name}-{os.getpid()}"

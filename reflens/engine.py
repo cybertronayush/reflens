@@ -147,10 +147,14 @@ class Repo:
         return out
 
     # ---- search ----------------------------------------------------------
-    def search(self, query: str, *, k: int = 10, mode: str = "auto") -> list[Hit]:
+    def search(
+        self, query: str, *, k: int = 10, mode: str = "auto", diversify: bool = False
+    ) -> list[Hit]:
         # Query with the SAME embedding model the index was built with.
         embed_model = (self.db.get_meta("config") or {}).get("embed_model")
-        return _search(self.db, query, k=k, mode=mode, embed_model=embed_model)
+        return _search(
+            self.db, query, k=k, mode=mode, embed_model=embed_model, diversify=diversify
+        )
 
     # ---- read (Tier-2, byte-exact) --------------------------------------
     def read(
