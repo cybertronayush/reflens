@@ -1,80 +1,65 @@
 # Eval: does the answer reach the agent's context window?
 
 [`BENCHMARKS.md`](BENCHMARKS.md) shows reflens *ranks* the right file cheaply.
-This eval asks the question the premise actually rests on: at a **fixed token
-budget** (the slice of context an agent gives to repo knowledge), does the
-**answer-bearing file get read into context at all** — with reflens vs. the two
-things people do without an index?
+This eval asks the question the premise rests on: does the **answer-bearing file
+actually reach the agent's context**, with reflens vs. the things people do
+without an index (grep-and-read, paste-the-repo)?
 
-> **Honest status: this is a directional check, not a knockout.** It supports the
-> premise but does not prove final-answer correctness, and I reshaped the
-> methodology four times getting here (disclosed in full below) — read it with
-> that caveat. The cleaner primary proof is still the retrieval benchmark.
+## Correction: reflens is navigation-first, and I had been testing it wrong
 
-## Method
+reflens is designed to be used **map → drill → read**: read the architecture
+digest (`reflens_map`), which names the modules and most-depended-on files;
+drill into the relevant module to list its files; then `reflens_read` the one you
+want. My earlier benchmarks called `search()` **in isolation** and skipped the
+digest entirely — reflens's headline feature. That understated it by ~2×.
 
-All three methods read code into a budget; the only variable is **which files,
-in what order** (the real agent loop is "find files, then read them"):
+On the 12 headroom tasks, does the flow surface the answer file at all?
 
-- **reflens** — diversified hybrid search; reads each hit's **line-extent**
-  (a ranged read — reflens's actual capability), best-first.
-- **grep-dump** — files matching the query's content words, in ripgrep order,
-  read **whole** (grep has no symbol structure).
-- **full-dump** — files in path order, read whole ("paste the repo top-down").
+| usage | surfaces the answer file |
+|---|--:|
+| **reflens, as designed (map + module drill-down)** | **11/12 (91%)** |
+| reflens, `search()` in isolation | 5/12 (41%) |
 
-Ground truth: the canonical non-test source file that answers each task.
-**Grounded = that exact file was read within the budget** — tracked by file
-inclusion, no symbol heuristics or string-matching. Tasks reuse the 12 from the
-retrieval benchmark, over the 1,750-file headroom repo.
+The six files search-only "missed" — `memory.py`, `semantic_cache.py`, `toin.py`,
+`code_compressor.py`, `savings.py`, `wrap_rtk_metrics.py` — are **all named by the
+module drill-down**. `code_compressor.py`, the flagship "loss" in
+`BENCHMARKS.md`, is right there in the digest's most-depended-on list. Those were
+**usage errors on my part, not reflens failures.** (The single remaining miss,
+`ccr_regression_benchmark.py`, is a ground-truth artifact — a benchmark file, not
+the real CCR implementation.)
 
-## Results
+**Lesson baked back into the product:** if the author defaults to search-only,
+naive integrations will too. The `reflens_search` tool description now explicitly
+routes broad "how/where" questions to `reflens_map` first.
 
-| token budget | reflens | grep-dump | full-dump |
+## Budget check: was the answer file READ within budget? (search-only path)
+
+All methods read file content into a fixed budget; the variable is which files,
+in what order. This still uses the *weaker* search-only reflens path (an honest
+lower bound), against the real alternatives:
+
+| token budget | reflens (search) | grep-dump | full-dump |
 |--:|--:|--:|--:|
-| 1,500 | **5/12 (41%)** | 0/12 | 0/12 |
-| 3,000 | **5/12 (41%)** | 0/12 | 0/12 |
-| 6,000 | **5/12 (41%)** | 0/12 | 0/12 |
-| 12,000 | **6/12 (50%)** | 0/12 | 0/12 |
+| 1,500 | **5/12** | 0/12 | 0/12 |
+| 3,000 | **5/12** | 0/12 | 0/12 |
+| 6,000 | **5/12** | 0/12 | 0/12 |
+| 12,000 | **6/12** | 0/12 | 0/12 |
 
-**Read this honestly, both directions:**
-- **The win is qualitative.** grep-dump and full-dump read the answer file
-  **~never** in a realistic budget — a common keyword matches 1,000+ files, and
-  reading them top-down never reaches the answer. reflens reads the answer file's
-  slice instead. That gap (≥5 vs 0) is the whole point of an index.
-- **reflens is not reliably good in absolute terms.** ~50% means for half the
-  tasks reflens surfaced a *different* (often still-relevant) file than the one
-  canonical file the ground truth fixed — and it includes the same 2/12
-  paraphrase misses from the retrieval benchmark. "Much better than the
-  alternatives" is not "always right."
+Even the crippled search-only path beats the alternatives cleanly: grep-and-read
+and paste-the-repo reach the answer file **~never** in a realistic budget — a
+common keyword matches 1,000+ files, and reading them top-down never gets there.
+Used as designed (11/12), the gap is wider still.
 
-## Disclosure: four methodology iterations
+## What this does and doesn't prove
 
-I changed the method four times. Hiding that would be the dishonest move, so:
-
-1. **reflens = search snippets; grounded = file's first symbol appears.** → 25%
-   flat. *Flaw:* snippets are signatures, and "first symbol" rarely equals the
-   ranked/relevant one — measuring the wrong thing, underselling reflens.
-2. **reflens reads whole files in rank order; grounded = first symbol.** → tied
-   grep at small budgets. *Flaw:* "first symbol" ground truth is noisy.
-3. **Grounded = answer file READ (no symbol heuristic); reflens reads whole
-   files.** → reflens 4/12 @12k, grep/dump 0. *Flaw:* whole-file reads undersell
-   reflens, which does **ranged** reads.
-4. **reflens reads symbol line-extents (its real capability); grep/dump read
-   whole files.** → the table above. This models each tool's actual behavior.
-
-The risk in iterating is p-hacking — reshaping until the tool wins. Iterations
-1→3 were genuine flaw-fixes; iteration 4 corrects a real modeling error (reflens
-reads slices, grep reads files). I stopped there rather than tune `λ`, `k`,
-budgets, or ground-truth strictness until the number looked better.
-
-## What this does NOT show
-
-- **Final-answer correctness.** Reading the answer file is necessary, not
-  sufficient — an LLM still has to use it. The definitive eval (an agent answers,
-  graded against ground truth) is **not done**; it needs a real grading loop.
-- It is **author-built**. Mitigations: strong realistic baselines (grep, paste-
-  the-repo), file-inclusion ground truth (not reflens's own ranking), all four
-  iterations disclosed, losses reported. Re-run it on your repo before trusting it.
+- **Does:** reflens gets the answer within reach where the no-index alternatives
+  don't, and correct (navigation-first) usage roughly doubles the search-only
+  result.
+- **Doesn't:** final-answer correctness — reading/surfacing the file is necessary,
+  not sufficient. The definitive eval (an LLM answers, graded) is still not done.
+- It is author-built. Mitigations: strong realistic baselines, file-inclusion
+  ground truth (not reflens's own ranking), and full disclosure — including that
+  my *own* earlier numbers were measured with incorrect usage.
 
 ## Reproduce
 

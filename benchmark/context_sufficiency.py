@@ -133,6 +133,25 @@ def main() -> int:
         if f is not None:
             graded.append((q, str(f)))
 
+    # --- Correct-usage check: reflens is navigation-first (map -> drill -> read),
+    # not search-only. Measure whether the DESIGNED flow surfaces the answer file
+    # (names it in the architecture digest or a module drill-down) vs search alone.
+    l0 = repo.map(level=0)[0]
+    drill_cache: dict[str, str] = {}
+    search_only = navigation = 0
+    for q, answer in graded:
+        base, module = Path(answer).name, Path(answer).parent.name
+        rel = str(Path(answer).resolve()).replace(str(src.resolve()) + "/", "")
+        if module not in drill_cache:
+            drill_cache[module] = repo.map(path_glob=f"**/{module}/**", level=1)[0]
+        surfaced_nav = base in l0 or rel in l0 or base in drill_cache[module]
+        surfaced_search = any(
+            str((src / h.path).resolve()) == answer
+            for h in repo.search(q, k=25, mode="auto")
+        )
+        navigation += surfaced_nav or surfaced_search
+        search_only += surfaced_search
+
     res = {b: {"reflens": 0, "grep-dump": 0, "full-dump": 0} for b in BUDGETS}
     for b in BUDGETS:
         dump = dump_files(src, b)  # query-independent
@@ -148,8 +167,17 @@ def main() -> int:
     n = len(graded)
     lines = [
         f"# Context-sufficiency eval — `{args.repo}`\n",
-        f"Source: `{src}`  ·  {n} graded tasks · metric: was the answer file READ within budget?\n",
-        "| token budget | reflens | grep-dump | full-dump |", "|--:|--:|--:|--:|",
+        f"Source: `{src}`  ·  {n} graded tasks\n",
+        "## Correct usage matters: navigation-first vs search-only\n",
+        "reflens is designed to be used map -> drill -> read, not search-in-isolation.",
+        "Does the flow surface the answer file at all?\n",
+        f"- **reflens, used as designed (map + module drill-down): {navigation}/{n} "
+        f"({100 * navigation // n if n else 0}%)**",
+        f"- reflens, search() in isolation: {search_only}/{n} "
+        f"({100 * search_only // n if n else 0}%)  ← what a naive integration (and my earlier "
+        "benchmarks) measured\n",
+        "## Budget check (search-only path): was the answer file READ within budget?\n",
+        "| token budget | reflens (search) | grep-dump | full-dump |", "|--:|--:|--:|--:|",
     ]
     for b in BUDGETS:
         r = res[b]

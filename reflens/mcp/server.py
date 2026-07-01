@@ -82,10 +82,13 @@ def tool_specs() -> list[dict[str, Any]]:
         {
             "name": "reflens_search",
             "description": (
-                "Search a reference repo for relevant code/text. Hybrid lexical (FTS5) + "
-                "semantic (when enabled), fused by reciprocal-rank. Returns ranked hits with "
-                "path + line range + snippet. Use this to find where something is implemented, "
-                "then reflens_read the exact source."
+                "Search a reference repo for a SPECIFIC symbol, string, or error. Hybrid "
+                "lexical (FTS5) + semantic, fused by reciprocal-rank; returns ranked hits with "
+                "path + line range + snippet, then reflens_read the exact source. "
+                "For a broad 'how does X work' / 'where is X' question, call reflens_map FIRST "
+                "(it names the modules + most-depended-on files, and drilling a module surfaces "
+                "implementations that paraphrased search queries miss) — search alone is a "
+                "weaker way to explore an unfamiliar repo."
             ),
             "inputSchema": {
                 "type": "object",
